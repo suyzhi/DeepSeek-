@@ -20,6 +20,7 @@ class PopoverViewController: NSViewController {
     ]
     private var selectedIntervalIndex = 5
     private var rawHistory: [BalancePoint] = []
+    private var currentBalanceValue: Double = 0
 
     // MARK: - Lifecycle
     override func loadView() {
@@ -156,27 +157,6 @@ class PopoverViewController: NSViewController {
 
     // MARK: - Actions
     @objc private func topUpClicked() {
-        let alert = NSAlert()
-        alert.messageText = "DeepSeek 充值"
-        alert.informativeText = "输入充值金额（元），将打开官网完成支付。"
-        alert.alertStyle = .informational
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 180, height: 22))
-        input.placeholderString = "例如：50"
-        input.alignment = .center
-        alert.accessoryView = input
-        alert.addButton(withTitle: "前往充值")
-        alert.addButton(withTitle: "取消")
-
-        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] resp in
-            guard resp == .alertFirstButtonReturn else { return }
-            let v = input.stringValue.trimmingCharacters(in: .whitespaces)
-            if !v.isEmpty { self?.openTopUp() }
-        }
-        if let w = view.window { alert.beginSheetModal(for: w, completionHandler: handler) }
-        else { handler(alert.runModal()) }
-    }
-
-    private func openTopUp() {
         if let url = URL(string: "https://platform.deepseek.com/top_up") {
             NSWorkspace.shared.open(url)
         }
@@ -187,6 +167,7 @@ class PopoverViewController: NSViewController {
         selectedIntervalIndex = sender.tag
         highlightInterval(at: selectedIntervalIndex)
         refreshChart()
+        updateChangeLabel()
     }
 
     // MARK: - Public API
@@ -206,25 +187,34 @@ class PopoverViewController: NSViewController {
         rawHistory = history
 
         if let b = balance {
-            let val = Double(b.totalBalance) ?? 0
-            balanceValueLabel.stringValue = String(format: "¥ %.2f", val)
-
-            let filtered = currentWindow()
-            if filtered.count >= 2, let first = filtered.first {
-                let chg = val - first.balance
-                if chg < -0.01 {
-                    balanceChangeLabel.stringValue = "↓ \(String(format: "%.2f", abs(chg)))"
-                    balanceChangeLabel.textColor = NSColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
-                } else if chg > 0.01 {
-                    balanceChangeLabel.stringValue = "↑ \(String(format: "%.2f", chg))"
-                    balanceChangeLabel.textColor = NSColor(red: 0.4, green: 1, blue: 0.5, alpha: 1)
-                } else {
-                    balanceChangeLabel.stringValue = "→ 稳定"
-                    balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
-                }
-            }
+            currentBalanceValue = Double(b.totalBalance) ?? 0
+            balanceValueLabel.stringValue = String(format: "¥ %.2f", currentBalanceValue)
         }
+        updateChangeLabel()
         refreshChart()
+    }
+
+    private func updateChangeLabel() {
+        let filtered = currentWindow()
+        let intervalName = intervals[selectedIntervalIndex].label
+        if filtered.count >= 2, let first = filtered.first {
+            let chg = currentBalanceValue - first.balance
+            if chg < -0.01 {
+                balanceChangeLabel.stringValue = "近\(intervalName)消费 ¥ \(String(format: "%.2f", abs(chg)))"
+                balanceChangeLabel.textColor = NSColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
+            } else if chg > 0.01 {
+                balanceChangeLabel.stringValue = "近\(intervalName)充值 ¥ \(String(format: "%.2f", chg))"
+                balanceChangeLabel.textColor = NSColor(red: 0.4, green: 1, blue: 0.5, alpha: 1)
+            } else {
+                balanceChangeLabel.stringValue = "近\(intervalName)无变动"
+                balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
+            }
+        } else if filtered.count == 1 {
+            balanceChangeLabel.stringValue = "近\(intervalName)无变动"
+            balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
+        } else {
+            balanceChangeLabel.stringValue = ""
+        }
     }
 
     func showBalanceError(_ err: String) {
@@ -271,9 +261,9 @@ class PopoverViewController: NSViewController {
         let c = container.bounds.insetBy(dx: 4, dy: 6)
 
         // Plot area with generous margins for labels
-        let pX: CGFloat = c.minX + 44                       // left edge (room for Y labels)
+        let pX: CGFloat = c.minX + 38                       // left edge (room for Y labels)
         let pY: CGFloat = c.minY + 24                       // bottom edge (room for X labels)
-        let pW: CGFloat = max(c.width - 44 - 4, 20)         // plot width
+        let pW: CGFloat = max(c.width - 38 - 14, 20)        // plot width (38 left + 14 right padding)
         let pH: CGFloat = max(c.height - 24 - 12, 20)       // plot height (24 bottom + 12 top)
 
         let vals = data.map { $0.balance }
