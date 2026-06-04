@@ -195,9 +195,36 @@ class PopoverViewController: NSViewController {
     }
 
     private func updateChangeLabel() {
-        let filtered = currentWindow()
+        let raw = rawWindowData()
         let intervalName = intervals[selectedIntervalIndex].label
-        if filtered.count >= 2, let first = filtered.first {
+
+        // Debug: log to file
+        let debugMsg: String
+        if raw.count >= 2 {
+            let firstDate = raw.first!.date
+            let lastDate = raw.last!.date
+            let firstBal = raw.first!.balance
+            let lastBal = raw.last!.balance
+            let rawChg = lastBal - firstBal
+            let withCurrent = currentBalanceValue - firstBal
+            debugMsg = "[DEBUG] \(intervalName): raw pts=\(raw.count), first=\(firstDate) \(String(format: "%.2f", firstBal)), last=\(lastDate) \(String(format: "%.2f", lastBal)), rawΔ=\(String(format: "%.2f", rawChg)), withCurrentΔ=\(String(format: "%.2f", withCurrent)), currentBalanceValue=\(String(format: "%.2f", currentBalanceValue))"
+        } else if raw.count == 1 {
+            debugMsg = "[DEBUG] \(intervalName): only 1 raw pt: \(raw.first!.date) \(String(format: "%.2f", raw.first!.balance))"
+        } else {
+            debugMsg = "[DEBUG] \(intervalName): no raw data"
+        }
+        print(debugMsg)
+        if let logURL = try? FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("DeepSeekStats_debug.log") {
+            if let handle = try? FileHandle(forWritingTo: logURL) {
+                handle.seekToEndOfFile()
+                handle.write((debugMsg + "\n").data(using: .utf8)!)
+                handle.closeFile()
+            } else {
+                try? debugMsg.data(using: .utf8)?.write(to: logURL)
+            }
+        }
+
+        if raw.count >= 2, let first = raw.first {
             let chg = currentBalanceValue - first.balance
             if chg < -0.01 {
                 balanceChangeLabel.stringValue = "近\(intervalName)消费 ¥ \(String(format: "%.2f", abs(chg)))"
@@ -209,7 +236,7 @@ class PopoverViewController: NSViewController {
                 balanceChangeLabel.stringValue = "近\(intervalName)无变动"
                 balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
             }
-        } else if filtered.count == 1 {
+        } else if raw.count == 1 {
             balanceChangeLabel.stringValue = "近\(intervalName)无变动"
             balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
         } else {
@@ -237,15 +264,22 @@ class PopoverViewController: NSViewController {
         }
     }
 
-    private func currentWindow() -> [(date: String, balance: Double)] {
+    /// Raw (un-grouped) data points within the selected time window
+    private func rawWindowData() -> [BalancePoint] {
         guard !rawHistory.isEmpty else { return [] }
         let mins = intervals[selectedIntervalIndex].minutes
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm"
         let cutoff = Calendar.current.date(byAdding: .minute, value: -mins, to: Date())!
-        let pts = rawHistory.filter { fmt.date(from: $0.date).map { $0 >= cutoff } ?? false }
+        return rawHistory.filter { fmt.date(from: $0.date).map { $0 >= cutoff } ?? false }
             .sorted { $0.date < $1.date }
+    }
 
+    /// Grouped data for chart rendering (keeps last point per hour for long intervals)
+    private func currentWindow() -> [(date: String, balance: Double)] {
+        let pts = rawWindowData()
+        guard !pts.isEmpty else { return [] }
+        let mins = intervals[selectedIntervalIndex].minutes
         if mins <= 60 { return pts.map { ($0.date, $0.balance) } }
         var grouped: [String: BalancePoint] = [:]
         for p in pts {
@@ -278,7 +312,7 @@ class PopoverViewController: NSViewController {
             line.backgroundColor = NSColor(white: 0.3, alpha: 0.15).cgColor
             container.layer?.addSublayer(line)
 
-            let lbl = makeAxisLabel(String(format: "¥%.1f", hi - CGFloat(frac) * rng), size: 8, color: .init(white: 0.45, alpha: 0.8))
+            let lbl = makeAxisLabel(String(format: "¥%.1f", lo + CGFloat(frac) * rng), size: 8, color: .init(white: 0.45, alpha: 0.8))
             lbl.frame = NSRect(x: c.minX, y: y - 5, width: 36, height: 10)
             lbl.alignmentMode = .right
             container.layer?.addSublayer(lbl)
