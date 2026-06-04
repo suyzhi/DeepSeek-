@@ -295,9 +295,9 @@ class PopoverViewController: NSViewController {
         let c = container.bounds.insetBy(dx: 4, dy: 6)
 
         // Plot area with generous margins for labels
-        let pX: CGFloat = c.minX + 38                       // left edge (room for Y labels)
+        let pX: CGFloat = c.minX + 48                       // left edge (room for Y labels)
         let pY: CGFloat = c.minY + 24                       // bottom edge (room for X labels)
-        let pW: CGFloat = max(c.width - 38 - 14, 20)        // plot width (38 left + 14 right padding)
+        let pW: CGFloat = max(c.width - 48 - 14, 20)        // plot width (48 left + 14 right padding)
         let pH: CGFloat = max(c.height - 24 - 12, 20)       // plot height (24 bottom + 12 top)
 
         let vals = data.map { $0.balance }
