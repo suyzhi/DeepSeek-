@@ -17,6 +17,10 @@ class PopoverViewController: NSViewController {
     private var separatorLine: NSView!
     private var chartIconLabel: NSTextField!
     private var chartTitleLabel: NSTextField!
+    private var titleLabel: NSTextField!
+    private var sectionIcon: NSTextField!
+    private var balanceTitle: NSTextField!
+    private var accentDot: NSView!
 
     private let intervals: [(label: String, minutes: Int)] = [
         ("5分", 5), ("1时", 60), ("6时", 360), ("12时", 720), ("1天", 1440), ("7天", 10080),
@@ -63,6 +67,7 @@ class PopoverViewController: NSViewController {
         let titleLabel = makeLabel("DeepSeek 用量", size: 15, weight: .semibold, color: .white)
         titleLabel.frame = NSRect(x: 18, y: 330, width: 200, height: 22)
         root.addSubview(titleLabel)
+        self.titleLabel = titleLabel
 
         // Accent dot next to title
         let dot = NSView(frame: NSRect(x: 260, y: 338, width: 6, height: 6))
@@ -70,15 +75,18 @@ class PopoverViewController: NSViewController {
         dot.layer?.cornerRadius = 3
         dot.layer?.backgroundColor = NSColor(red: 0.3, green: 0.85, blue: 0.5, alpha: 1).cgColor
         root.addSubview(dot)
+        accentDot = dot
 
         // ── Balance Section ──
         let sectionIcon = makeLabel("💰", size: 13, weight: .regular, color: .white)
         sectionIcon.frame = NSRect(x: 18, y: 298, width: 22, height: 18)
         root.addSubview(sectionIcon)
+        self.sectionIcon = sectionIcon
 
         let balanceTitle = makeLabel("余额", size: 12, weight: .medium, color: NSColor(white: 0.75, alpha: 1))
         balanceTitle.frame = NSRect(x: 40, y: 298, width: 60, height: 18)
         root.addSubview(balanceTitle)
+        self.balanceTitle = balanceTitle
 
         // Balance value
         balanceValueLabel = makeLabel("加载中...", size: 26, weight: .bold, color: NSColor(red: 0.55, green: 1.0, blue: 0.7, alpha: 1))
@@ -461,21 +469,37 @@ class PopoverViewController: NSViewController {
     private func setCompactMode(_ compact: Bool) {
         guard balanceChangeLabel.isHidden != compact else { return }
 
-        let dy: CGFloat = compact ? 16 : -16
         balanceChangeLabel.isHidden = compact
+        let dyTop: CGFloat = compact ? -8 : 8   // title+balance section moves down/up
+        let dyBot: CGFloat = compact ? 8 : -8   // separator+chart section moves up/down
 
-        separatorLine.frame.origin.y += dy
-        chartIconLabel.frame.origin.y += dy
-        chartTitleLabel.frame.origin.y += dy
+        // Top section
+        titleLabel.frame.origin.y += dyTop
+        accentDot.frame.origin.y += dyTop
+        sectionIcon.frame.origin.y += dyTop
+        balanceTitle.frame.origin.y += dyTop
+        balanceValueLabel.frame.origin.y += dyTop
+        topUpButton.frame.origin.y += dyTop
+
+        // Bottom section
+        separatorLine.frame.origin.y += dyBot
+        chartIconLabel.frame.origin.y += dyBot
+        chartTitleLabel.frame.origin.y += dyBot
         for btn in intervalButtons {
-            btn.frame.origin.y += dy
+            btn.frame.origin.y += dyBot
         }
-        chartContainer.frame.origin.y += dy
+        chartContainer.frame.origin.y += dyBot
 
-        // Resize window (backgrounds auto-resize via autoresizingMask)
+        // Animate window resize
         let h = compact ? CGFloat(354) : CGFloat(370)
+        if let win = view.window {
+            var frame = win.frame
+            let oldH = frame.size.height
+            frame.size.height = h
+            frame.origin.y += oldH - h  // keep top edge fixed
+            win.setFrame(frame, display: true, animate: true)
+        }
         view.setFrameSize(NSSize(width: 300, height: h))
-        view.window?.setContentSize(NSSize(width: 300, height: h))
     }
 
     private func highlightInterval(at idx: Int) {
