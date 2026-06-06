@@ -22,6 +22,7 @@ class PopoverViewController: NSViewController {
     private var balanceTitle: NSTextField!
     private var accentDot: NSView!
     private var isCompact = false
+    private var previousLinePath: CGPath?
 
     private let intervals: [(label: String, minutes: Int)] = [
         ("5分", 5), ("1时", 60), ("6时", 360), ("12时", 720), ("1天", 1440), ("7天", 10080),
@@ -288,10 +289,13 @@ class PopoverViewController: NSViewController {
         let data = currentWindow()
         if data.count >= 2 {
             emptyLabel.isHidden = true
-            drawChart(data)
+            // Capture old chart as bitmap for crossfade
+            let snapshot = captureChartBitmap()
+            drawChart(data, oldSnapshot: snapshot)
         } else {
             emptyLabel.isHidden = false
             chartContainer.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
+            previousLinePath = nil
         }
     }
 
@@ -335,7 +339,7 @@ class PopoverViewController: NSViewController {
         return result
     }
 
-    private func drawChart(_ data: [(date: String, balance: Double)]) {
+    private func drawChart(_ data: [(date: String, balance: Double)], oldSnapshot: CGImage?) {
         chartContainer.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
         let container = chartContainer!
         let c = container.bounds.insetBy(dx: 4, dy: 6)
@@ -415,19 +419,35 @@ class PopoverViewController: NSViewController {
         }
         guard pts.count >= 2 else { return }
 
-        // ── Smooth fill ──
-        let fillPath = CGMutablePath()
-        fillPath.move(to: CGPoint(x: pts[0].x, y: pY))
-        for pt in pts { fillPath.addLine(to: pt) }
-        fillPath.addLine(to: CGPoint(x: pts.last!.x, y: pY))
-        fillPath.closeSubpath()
+        // ── Curve layer (separate from grid, for independent animation) ──
+        let curveLayer = CALayer()
+        curveLayer.frame = container.bounds
+        container.layer?.addSublayer(curveLayer)
 
-        let fill = CAShapeLayer()
-        fill.path = fillPath
-        fill.fillColor = NSColor(red: 0.3, green: 0.6, blue: 1.0, alpha: 0.18).cgColor
-        container.layer?.addSublayer(fill)
+        // ── Vertical drop lines (fade in after curve morph) ──
+        let dropLayer = CALayer()
+        dropLayer.frame = container.bounds
+        dropLayer.opacity = 0
+        curveLayer.addSublayer(dropLayer)
 
-        // ── Smooth curve (catmull-rom → bezier) ──
+        for pt in pts {
+            let dh = max(0, pt.y - pY)
+            let dl = CALayer()
+            dl.frame = NSRect(x: pt.x - 0.5, y: pY, width: 1, height: dh)
+            dl.backgroundColor = NSColor(white: 0.45, alpha: 0.12).cgColor
+            dropLayer.addSublayer(dl)
+        }
+
+        let dropFade = CABasicAnimation(keyPath: "opacity")
+        dropFade.fromValue = 0
+        dropFade.toValue = 1.0
+        dropFade.duration = 0.35
+        dropFade.beginTime = CACurrentMediaTime() + 0.45
+        dropFade.fillMode = .forwards
+        dropFade.isRemovedOnCompletion = false
+        dropLayer.add(dropFade, forKey: "dropFade")
+
+        // ── Smooth curve ──
         let smoothPath = smoothedPath(pts)
 
         let line = CAShapeLayer()
@@ -437,17 +457,70 @@ class PopoverViewController: NSViewController {
         line.fillColor = nil
         line.lineCap = .round
         line.lineJoin = .round
-        container.layer?.addSublayer(line)
+        curveLayer.addSublayer(line)
 
-        // Glow behind the line
+        // Morph from previous curve path
+        if let prevLine = previousLinePath {
+            let morph = CABasicAnimation(keyPath: "path")
+            morph.fromValue = prevLine
+            morph.toValue = smoothPath
+            morph.duration = 0.55
+            morph.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            line.add(morph, forKey: "curveMorph")
+        }
+        previousLinePath = smoothPath
+
+        // ── Smooth fill (wipe from top to bottom after curve morph) ──
+        let fillPath = CGMutablePath()
+        fillPath.move(to: CGPoint(x: pts[0].x, y: pY))
+        for pt in pts { fillPath.addLine(to: pt) }
+        fillPath.addLine(to: CGPoint(x: pts.last!.x, y: pY))
+        fillPath.closeSubpath()
+
+        // Start shape: collapsed to a thin strip at the bottom
+        let startPath = CGMutablePath()
+        startPath.move(to: CGPoint(x: pX, y: pY))
+        startPath.addLine(to: CGPoint(x: pX, y: pY + 1))
+        for pt in pts.dropFirst() {
+            startPath.addLine(to: CGPoint(x: pt.x, y: pY + 1))
+        }
+        startPath.addLine(to: CGPoint(x: pX + pW, y: pY))
+        startPath.closeSubpath()
+
+        let fill = CAShapeLayer()
+        fill.path = startPath
+        fill.fillColor = NSColor(red: 0.3, green: 0.6, blue: 1.0, alpha: 0.15).cgColor
+        curveLayer.addSublayer(fill)
+
+        let wipeAnim = CABasicAnimation(keyPath: "path")
+        wipeAnim.fromValue = startPath
+        wipeAnim.toValue = fillPath
+        wipeAnim.duration = 0.4
+        wipeAnim.beginTime = CACurrentMediaTime() + 0.45
+        wipeAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        wipeAnim.fillMode = .forwards
+        wipeAnim.isRemovedOnCompletion = false
+        fill.add(wipeAnim, forKey: "fillWipe")
+
+        // Glow behind the line — fade in after curve morph completes
         let glow = CAShapeLayer()
         glow.path = smoothPath
-        glow.strokeColor = NSColor(red: 0.3, green: 0.7, blue: 1.0, alpha: 0.3).cgColor
-        glow.lineWidth = 5
+        glow.strokeColor = NSColor(red: 0.3, green: 0.7, blue: 1.0, alpha: 0.15).cgColor
+        glow.lineWidth = 4
         glow.fillColor = nil
         glow.lineCap = .round
         glow.lineJoin = .round
-        container.layer?.addSublayer(glow)
+        glow.opacity = 0
+        curveLayer.addSublayer(glow)
+
+        let glowFade = CABasicAnimation(keyPath: "opacity")
+        glowFade.fromValue = 0
+        glowFade.toValue = 1.0
+        glowFade.duration = 0.35
+        glowFade.beginTime = CACurrentMediaTime() + 0.45
+        glowFade.fillMode = .forwards
+        glowFade.isRemovedOnCompletion = false
+        glow.add(glowFade, forKey: "glowFade")
 
         // ── Dots ──
         for (i, pt) in pts.enumerated() {
@@ -461,16 +534,59 @@ class PopoverViewController: NSViewController {
                 : NSColor(white: 0.85, alpha: 0.6).cgColor
 
             if isLast {
-                // Outer glow ring on last dot
                 let ring = CALayer()
                 let rs: CGFloat = 10
                 ring.frame = NSRect(x: pt.x - rs/2, y: pt.y - rs/2, width: rs, height: rs)
                 ring.cornerRadius = rs / 2
                 ring.backgroundColor = NSColor(red: 0.35, green: 0.78, blue: 1, alpha: 0.2).cgColor
-                container.layer?.addSublayer(ring)
+                curveLayer.addSublayer(ring)
             }
-            container.layer?.addSublayer(dot)
+            curveLayer.addSublayer(dot)
         }
+
+        // ── Crossfade: old snapshot fades out ──
+        if let snap = oldSnapshot {
+            let snapLayer = CALayer()
+            snapLayer.contents = snap
+            snapLayer.frame = container.bounds
+            container.layer?.addSublayer(snapLayer)
+
+            let fadeOut = CABasicAnimation(keyPath: "opacity")
+            fadeOut.fromValue = 1.0
+            fadeOut.toValue = 0.0
+            fadeOut.duration = 0.5
+            fadeOut.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            fadeOut.isRemovedOnCompletion = false
+            fadeOut.fillMode = .forwards
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { snapLayer.removeFromSuperlayer() }
+            snapLayer.add(fadeOut, forKey: nil)
+            CATransaction.commit()
+        }
+
+        // Subtle pop on new curve
+        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
+        pop.values = [0.93, 1.0]
+        pop.keyTimes = [0, 1]
+        pop.duration = 0.5
+        pop.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        curveLayer.add(pop, forKey: "chartPop")
+    }
+
+    /// Capture current chart content as bitmap for crossfade
+    private func captureChartBitmap() -> CGImage? {
+        guard let layer = chartContainer?.layer, let subs = layer.sublayers, !subs.isEmpty else { return nil }
+        let bounds = layer.bounds
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let w = Int(bounds.width * scale)
+        let h = Int(bounds.height * scale)
+        guard let ctx = CGContext(data: nil, width: w, height: h,
+                                  bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        layer.render(in: ctx)
+        return ctx.makeImage()
     }
 
     /// Straight line segments
