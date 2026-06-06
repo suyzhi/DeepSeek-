@@ -502,6 +502,7 @@ class PopoverViewController: NSViewController {
 
         // Animate window resize
         let h = compact ? CGFloat(354) : CGFloat(370)
+        view.setFrameSize(NSSize(width: 300, height: h))
         if let win = view.window {
             var frame = win.frame
             let oldH = frame.size.height
@@ -509,7 +510,6 @@ class PopoverViewController: NSViewController {
             frame.origin.y += oldH - h  // keep top edge fixed
             win.setFrame(frame, display: true, animate: true)
         }
-        view.setFrameSize(NSSize(width: 300, height: h))
     }
 
     private func highlightInterval(at idx: Int) {
