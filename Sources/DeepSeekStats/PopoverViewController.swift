@@ -21,6 +21,7 @@ class PopoverViewController: NSViewController {
     private var sectionIcon: NSTextField!
     private var balanceTitle: NSTextField!
     private var accentDot: NSView!
+    private var isCompact = false
 
     private let intervals: [(label: String, minutes: Int)] = [
         ("5分", 5), ("1时", 60), ("6时", 360), ("12时", 720), ("1天", 1440), ("7天", 10080),
@@ -477,30 +478,32 @@ class PopoverViewController: NSViewController {
 
     // MARK: - Helpers
     private func setCompactMode(_ compact: Bool) {
-        guard balanceChangeLabel.isHidden != compact else { return }
+        guard isCompact != compact else { return }
+        isCompact = compact
 
         balanceChangeLabel.isHidden = compact
-        let dyTop: CGFloat = compact ? -8 : 8   // title+balance section moves down/up
-        let dyBot: CGFloat = compact ? 8 : -8   // separator+chart section moves up/down
 
-        // Top section
-        titleLabel.frame.origin.y += dyTop
-        accentDot.frame.origin.y += dyTop
-        sectionIcon.frame.origin.y += dyTop
-        balanceTitle.frame.origin.y += dyTop
-        balanceValueLabel.frame.origin.y += dyTop
-        topUpButton.frame.origin.y += dyTop
-
-        // Bottom section
-        separatorLine.frame.origin.y += dyBot
-        chartIconLabel.frame.origin.y += dyBot
-        chartTitleLabel.frame.origin.y += dyBot
-        for btn in intervalButtons {
-            btn.frame.origin.y += dyBot
+        // Absolute positions (normal = expanded, compact shifts: top-8, bot+8)
+        let offsets: [(NSView, CGFloat)] = [
+            (titleLabel, compact ? 322 : 330),
+            (accentDot, compact ? 330 : 338),
+            (sectionIcon, compact ? 290 : 298),
+            (balanceTitle, compact ? 290 : 298),
+            (balanceValueLabel, compact ? 250 : 258),
+            (topUpButton, compact ? 258 : 266),
+            (separatorLine, compact ? 236 : 228),
+            (chartIconLabel, compact ? 216 : 208),
+            (chartTitleLabel, compact ? 216 : 208),
+        ]
+        for (v, y) in offsets {
+            v.frame.origin.y = y
         }
-        chartContainer.frame.origin.y += dyBot
+        for btn in intervalButtons {
+            btn.frame.origin.y = compact ? 194 : 186
+        }
+        chartContainer.frame.origin.y = compact ? 14 : 6
 
-        // Animate window resize
+        // Resize view before window animation so content is always correct
         let h = compact ? CGFloat(354) : CGFloat(370)
         view.setFrameSize(NSSize(width: 300, height: h))
         if let win = view.window {
