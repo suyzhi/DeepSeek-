@@ -14,6 +14,9 @@ class PopoverViewController: NSViewController {
     private var errorLabel: NSTextField!
     private var emptyLabel: NSTextField!
     private var intervalButtons: [NSButton] = []
+    private var separatorLine: NSView!
+    private var chartIconLabel: NSTextField!
+    private var chartTitleLabel: NSTextField!
 
     private let intervals: [(label: String, minutes: Int)] = [
         ("5分", 5), ("1时", 60), ("6时", 360), ("12时", 720), ("1天", 1440), ("7天", 10080),
@@ -101,10 +104,12 @@ class PopoverViewController: NSViewController {
         let chartIcon = makeLabel("📈", size: 12, weight: .regular, color: .white)
         chartIcon.frame = NSRect(x: 18, y: 208, width: 22, height: 16)
         root.addSubview(chartIcon)
+        chartIconLabel = chartIcon
 
         let chartTitle = makeLabel("余额变化", size: 12, weight: .medium, color: NSColor(white: 0.75, alpha: 1))
         chartTitle.frame = NSRect(x: 40, y: 208, width: 120, height: 16)
         root.addSubview(chartTitle)
+        chartTitleLabel = chartTitle
 
         // ── Interval selector ──
         let pillW: CGFloat = 38
@@ -197,6 +202,15 @@ class PopoverViewController: NSViewController {
     private func updateChangeLabel() {
         let raw = rawWindowData()
         let intervalName = intervals[selectedIntervalIndex].label
+
+        // Determine if there's meaningful change
+        let hasChange: Bool
+        if raw.count >= 2, let first = raw.first {
+            hasChange = abs(currentBalanceValue - first.balance) >= 0.01
+        } else {
+            hasChange = false
+        }
+        setCompactMode(!hasChange)
 
         // Debug: log to file
         let debugMsg: String
@@ -444,6 +458,26 @@ class PopoverViewController: NSViewController {
     }
 
     // MARK: - Helpers
+    private func setCompactMode(_ compact: Bool) {
+        guard balanceChangeLabel.isHidden != compact else { return }
+
+        let dy: CGFloat = compact ? 16 : -16
+        balanceChangeLabel.isHidden = compact
+
+        separatorLine.frame.origin.y += dy
+        chartIconLabel.frame.origin.y += dy
+        chartTitleLabel.frame.origin.y += dy
+        for btn in intervalButtons {
+            btn.frame.origin.y += dy
+        }
+        chartContainer.frame.origin.y += dy
+
+        // Resize window (backgrounds auto-resize via autoresizingMask)
+        let h = compact ? CGFloat(354) : CGFloat(370)
+        view.setFrameSize(NSSize(width: 300, height: h))
+        view.window?.setContentSize(NSSize(width: 300, height: h))
+    }
+
     private func highlightInterval(at idx: Int) {
         for (i, btn) in intervalButtons.enumerated() {
             let selected = i == idx
@@ -475,6 +509,7 @@ class PopoverViewController: NSViewController {
         sep.wantsLayer = true
         sep.layer?.backgroundColor = NSColor(white: 0.3, alpha: 0.25).cgColor
         root.addSubview(sep)
+        separatorLine = sep
     }
 
     private func makePillButton(title: String, color: NSColor) -> NSButton {
