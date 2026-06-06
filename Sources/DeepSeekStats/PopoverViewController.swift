@@ -301,6 +301,7 @@ class PopoverViewController: NSViewController {
     /// - ≤1时: no grouping (raw points)
     /// - >1时 <1天: group by hour (e.g. "2026-06-05 14")
     /// - ≥1天: group by day (e.g. "2026-06-05")
+    /// - Each group keeps first AND last point to preserve the full value range
     private func currentWindow() -> [(date: String, balance: Double)] {
         let pts = rawWindowData()
         guard !pts.isEmpty else { return [] }
@@ -308,12 +309,21 @@ class PopoverViewController: NSViewController {
         if mins <= 60 { return pts.map { ($0.date, $0.balance) } }
 
         let prefixLen = mins > 1440 ? 10 : 13  // day-level vs hour-level grouping
-        var grouped: [String: BalancePoint] = [:]
+        var firstIn: [String: BalancePoint] = [:]
+        var lastIn: [String: BalancePoint] = [:]
         for p in pts {
             let k = String(p.date.prefix(prefixLen))
-            if grouped[k] == nil || p.date > grouped[k]!.date { grouped[k] = p }
+            if firstIn[k] == nil || p.date < firstIn[k]!.date { firstIn[k] = p }
+            if lastIn[k] == nil || p.date > lastIn[k]!.date { lastIn[k] = p }
         }
-        return grouped.sorted { $0.key < $1.key }.map { ($0.key, $0.value.balance) }
+        // Merge first+last per group, sorted by group key
+        var result: [(date: String, balance: Double)] = []
+        let keys = Set(Array(firstIn.keys) + Array(lastIn.keys)).sorted()
+        for key in keys {
+            if let f = firstIn[key] { result.append((f.date, f.balance)) }
+            if let l = lastIn[key], l.date != firstIn[key]?.date { result.append((l.date, l.balance)) }
+        }
+        return result
     }
 
     private func drawChart(_ data: [(date: String, balance: Double)]) {
