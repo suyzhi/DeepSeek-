@@ -41,6 +41,11 @@ class PopoverViewController: NSViewController {
         buildUI()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        relayout()
+    }
+
     // MARK: - UI Build
     private func buildUI() {
         // ── Root ──
@@ -66,12 +71,12 @@ class PopoverViewController: NSViewController {
 
         // ── Title ──
         let titleLabel = makeLabel("DeepSeek 用量", size: 15, weight: .semibold, color: .white)
-        titleLabel.frame = NSRect(x: 18, y: 330, width: 200, height: 22)
+        titleLabel.frame = NSRect(x: 18, y: 0, width: 200, height: 22)     // y set by relayout
         root.addSubview(titleLabel)
         self.titleLabel = titleLabel
 
         // Accent dot next to title
-        let dot = NSView(frame: NSRect(x: 260, y: 338, width: 6, height: 6))
+        let dot = NSView(frame: NSRect(x: 260, y: 0, width: 6, height: 6))
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 3
         dot.layer?.backgroundColor = NSColor(red: 0.3, green: 0.85, blue: 0.5, alpha: 1).cgColor
@@ -80,43 +85,43 @@ class PopoverViewController: NSViewController {
 
         // ── Balance Section ──
         let sectionIcon = makeLabel("💰", size: 13, weight: .regular, color: .white)
-        sectionIcon.frame = NSRect(x: 18, y: 298, width: 22, height: 18)
+        sectionIcon.frame = NSRect(x: 18, y: 0, width: 22, height: 18)
         root.addSubview(sectionIcon)
         self.sectionIcon = sectionIcon
 
         let balanceTitle = makeLabel("余额", size: 12, weight: .medium, color: NSColor(white: 0.75, alpha: 1))
-        balanceTitle.frame = NSRect(x: 40, y: 298, width: 60, height: 18)
+        balanceTitle.frame = NSRect(x: 40, y: 0, width: 60, height: 18)
         root.addSubview(balanceTitle)
         self.balanceTitle = balanceTitle
 
         // Balance value
         balanceValueLabel = makeLabel("加载中...", size: 26, weight: .bold, color: NSColor(red: 0.55, green: 1.0, blue: 0.7, alpha: 1))
-        balanceValueLabel.frame = NSRect(x: 18, y: 258, width: 200, height: 34)
+        balanceValueLabel.frame = NSRect(x: 18, y: 0, width: 200, height: 34)
         root.addSubview(balanceValueLabel)
 
         // Top-up button
         topUpButton = makePillButton(title: "充值", color: NSColor(red: 0.35, green: 0.7, blue: 1.0, alpha: 0.9))
-        topUpButton.frame = NSRect(x: 238, y: 266, width: 48, height: 22)
+        topUpButton.frame = NSRect(x: 238, y: 0, width: 48, height: 22)
         topUpButton.target = self
         topUpButton.action = #selector(topUpClicked)
         root.addSubview(topUpButton)
 
         // Change indicator
         balanceChangeLabel = makeLabel("", size: 11, weight: .regular, color: NSColor(white: 0.55, alpha: 1))
-        balanceChangeLabel.frame = NSRect(x: 18, y: 242, width: 260, height: 16)
+        balanceChangeLabel.frame = NSRect(x: 18, y: 0, width: 260, height: 16)
         root.addSubview(balanceChangeLabel)
 
         // ── Separator ──
-        addSeparator(y: 228, root: root)
+        addSeparator(y: 0, root: root)
 
         // ── Chart Section ──
         let chartIcon = makeLabel("📈", size: 12, weight: .regular, color: .white)
-        chartIcon.frame = NSRect(x: 18, y: 208, width: 22, height: 16)
+        chartIcon.frame = NSRect(x: 18, y: 0, width: 22, height: 16)
         root.addSubview(chartIcon)
         chartIconLabel = chartIcon
 
         let chartTitle = makeLabel("余额变化", size: 12, weight: .medium, color: NSColor(white: 0.75, alpha: 1))
-        chartTitle.frame = NSRect(x: 40, y: 208, width: 120, height: 16)
+        chartTitle.frame = NSRect(x: 40, y: 0, width: 120, height: 16)
         root.addSubview(chartTitle)
         chartTitleLabel = chartTitle
 
@@ -127,7 +132,7 @@ class PopoverViewController: NSViewController {
         let startX = (300 - total) / 2
         for (i, item) in intervals.enumerated() {
             let btn = makePillButton(title: item.label, color: NSColor(white: 0.5, alpha: 0.3))
-            btn.frame = NSRect(x: startX + CGFloat(i) * (pillW + gap), y: 186, width: pillW, height: 18)
+            btn.frame = NSRect(x: startX + CGFloat(i) * (pillW + gap), y: 0, width: pillW, height: 18)
             btn.font = NSFont.systemFont(ofSize: 9, weight: .medium)
             btn.tag = i
             btn.target = self
@@ -138,7 +143,7 @@ class PopoverViewController: NSViewController {
         highlightInterval(at: selectedIntervalIndex)
 
         // ── Chart ──
-        chartContainer = NSView(frame: NSRect(x: 14, y: 6, width: 272, height: 170))
+        chartContainer = NSView(frame: NSRect(x: 14, y: 0, width: 272, height: 170))
         chartContainer.wantsLayer = true
         chartContainer.layer?.cornerRadius = 12
         chartContainer.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.55).cgColor
@@ -148,13 +153,13 @@ class PopoverViewController: NSViewController {
 
         // Empty-state label
         emptyLabel = makeLabel("暂无数据\n使用后将自动记录余额变化", size: 11, weight: .regular, color: NSColor(white: 0.45, alpha: 1))
-        emptyLabel.frame = NSRect(x: 14, y: 60, width: 272, height: 36)
+        emptyLabel.frame = NSRect(x: 14, y: 0, width: 272, height: 36)
         emptyLabel.alignment = .center
         emptyLabel.isHidden = true
         root.addSubview(emptyLabel)
 
         // Spinner
-        loadingSpinner = NSProgressIndicator(frame: NSRect(x: 138, y: 100, width: 24, height: 24))
+        loadingSpinner = NSProgressIndicator(frame: NSRect(x: 138, y: 0, width: 24, height: 24))
         loadingSpinner.style = .spinning
         loadingSpinner.controlSize = .small
         loadingSpinner.isIndeterminate = true
@@ -164,9 +169,12 @@ class PopoverViewController: NSViewController {
 
         // Error label
         errorLabel = makeLabel("", size: 11, weight: .regular, color: NSColor(red: 1, green: 0.35, blue: 0.35, alpha: 1))
-        errorLabel.frame = NSRect(x: 18, y: 16, width: 264, height: 16)
+        errorLabel.frame = NSRect(x: 18, y: 0, width: 264, height: 16)
         errorLabel.isHidden = true
         root.addSubview(errorLabel)
+
+        // Apply dynamic layout
+        relayout()
     }
 
     // MARK: - Actions
@@ -342,6 +350,15 @@ class PopoverViewController: NSViewController {
         let lo = vals.min()!, hi = vals.max()!
         let rng = max(hi - lo, 0.01)
 
+        // ── Time window params (used by both X-axis labels AND data points) ──
+        let count = data.count
+        guard count >= 2 else { return }
+        let mins = intervals[selectedIntervalIndex].minutes
+        let windowEnd = Date()
+        let windowStart = windowEnd.addingTimeInterval(-Double(mins) * 60)
+        let startSec = windowStart.timeIntervalSinceReferenceDate
+        let totalSpan = Double(mins) * 60  // full window, not data range
+
         // ── Grid lines ──
         for frac: CGFloat in [0, 0.25, 0.5, 0.75, 1] {
             let y = pY + frac * pH
@@ -351,20 +368,12 @@ class PopoverViewController: NSViewController {
             container.layer?.addSublayer(line)
 
             let lbl = makeAxisLabel(String(format: "¥%.1f", lo + Double(frac) * Double(rng)), size: 10, color: .init(white: 0.55, alpha: 0.9))
-            lbl.frame = NSRect(x: c.minX, y: y - 6, width: 44, height: 12)
-            lbl.alignmentMode = .right
+            lbl.frame = NSRect(x: c.minX, y: y - 6, width: pX - c.minX - 4, height: 12)
+            lbl.alignmentMode = .left
             container.layer?.addSublayer(lbl)
         }
 
         // ── X-axis time labels (based on selected window) ──
-        let count = data.count
-        guard count >= 2 else { return }
-        let mins = intervals[selectedIntervalIndex].minutes
-
-        // Window: from (now - mins) to now
-        let windowEnd = Date()
-        let windowStart = windowEnd.addingTimeInterval(-Double(mins) * 60)
-        let totalSpan = Double(mins) * 60  // full window, not data range
 
         // Tick interval based on selected time span
         let tickInterval: TimeInterval
@@ -374,7 +383,6 @@ class PopoverViewController: NSViewController {
         else { tickInterval = 86400 }                 // every 1 day
 
         // Round window start up to next clean tick boundary
-        let startSec = windowStart.timeIntervalSinceReferenceDate
         let roundedStartSec = ceil(startSec / tickInterval) * tickInterval
         let roundedStart = Date(timeIntervalSinceReferenceDate: roundedStartSec)
 
@@ -398,7 +406,7 @@ class PopoverViewController: NSViewController {
             tickDate = tickDate.addingTimeInterval(tickInterval)
         }
 
-        // ── Build points ──
+        // ── Build points (evenly spaced to always fill chart width) ──
         var pts: [CGPoint] = []
         for (i, v) in vals.enumerated() {
             let x = pX + (CGFloat(i) / max(CGFloat(count - 1), 1)) * pW
@@ -477,42 +485,79 @@ class PopoverViewController: NSViewController {
     }
 
     // MARK: - Helpers
+
+    /// Dynamic layout: positions all subviews bottom-up based on view bounds and compact mode.
+    /// Called from viewDidLayout() and whenever isCompact / view size changes.
+    private func relayout() {
+        let h = view.bounds.height
+        guard h >= 300 else { return }  // sanity guard during initial setup
+        let bottomPad: CGFloat = isCompact ? 14 : 6
+
+        var y: CGFloat = bottomPad
+
+        // Chart container
+        chartContainer.frame.origin.y = y
+        y += 170
+
+        // Interval buttons
+        y += 10
+        for btn in intervalButtons {
+            btn.frame.origin.y = y
+        }
+        y += 18
+
+        // Chart icon + title
+        y += 4
+        chartIconLabel.frame.origin.y = y
+        chartTitleLabel.frame.origin.y = y
+        y += 16
+
+        // Separator
+        y += 4
+        separatorLine.frame.origin.y = y
+        y += 1
+
+        // Balance change label (hidden in compact)
+        y += 13
+        if !isCompact {
+            balanceChangeLabel.frame.origin.y = y
+            y += 16
+        }
+        // 0pt gap — balanceValueLabel starts right after changeLabel
+
+        // Balance value + top-up button
+        balanceValueLabel.frame.origin.y = y
+        topUpButton.frame.origin.y = y + 8  // vertically centered within balance value area
+        y += 34
+
+        // Section icon + title
+        y += 6
+        sectionIcon.frame.origin.y = y
+        balanceTitle.frame.origin.y = y
+        y += 18
+
+        // Title + accent dot
+        y += 14
+        titleLabel.frame.origin.y = y
+        accentDot.frame.origin.y = y + 8
+        y += 22
+
+        // y now equals view.bounds.height - topPadding (computed from isCompact)
+    }
+
     private func setCompactMode(_ compact: Bool) {
         guard isCompact != compact else { return }
         isCompact = compact
 
         balanceChangeLabel.isHidden = compact
 
-        // Absolute positions (normal = expanded, compact shifts: top-8, bot+8)
-        let offsets: [(NSView, CGFloat)] = [
-            (titleLabel, compact ? 322 : 330),
-            (accentDot, compact ? 330 : 338),
-            (sectionIcon, compact ? 290 : 298),
-            (balanceTitle, compact ? 290 : 298),
-            (balanceValueLabel, compact ? 250 : 258),
-            (topUpButton, compact ? 258 : 266),
-            (separatorLine, compact ? 236 : 228),
-            (chartIconLabel, compact ? 216 : 208),
-            (chartTitleLabel, compact ? 216 : 208),
-        ]
-        for (v, y) in offsets {
-            v.frame.origin.y = y
-        }
-        for btn in intervalButtons {
-            btn.frame.origin.y = compact ? 194 : 186
-        }
-        chartContainer.frame.origin.y = compact ? 14 : 6
-
-        // Resize view before window animation so content is always correct
+        // Use preferredContentSize so NSPopover handles resize+animation properly
         let h = compact ? CGFloat(354) : CGFloat(370)
-        view.setFrameSize(NSSize(width: 300, height: h))
-        if let win = view.window {
-            var frame = win.frame
-            let oldH = frame.size.height
-            frame.size.height = h
-            frame.origin.y += oldH - h  // keep top edge fixed
-            win.setFrame(frame, display: true, animate: true)
-        }
+        preferredContentSize = NSSize(width: 300, height: h)
+
+        // Relayout after size change — viewDidLayout will also call relayout,
+        // but calling it here ensures positions are correct immediately
+        relayout()
     }
 
     private func highlightInterval(at idx: Int) {
