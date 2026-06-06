@@ -124,7 +124,7 @@ class PopoverViewController: NSViewController {
         highlightInterval(at: selectedIntervalIndex)
 
         // ── Chart ──
-        chartContainer = NSView(frame: NSRect(x: 14, y: 10, width: 272, height: 168))
+        chartContainer = NSView(frame: NSRect(x: 14, y: 6, width: 272, height: 170))
         chartContainer.wantsLayer = true
         chartContainer.layer?.cornerRadius = 12
         chartContainer.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.55).cgColor
@@ -275,15 +275,20 @@ class PopoverViewController: NSViewController {
             .sorted { $0.date < $1.date }
     }
 
-    /// Grouped data for chart rendering (keeps last point per hour for long intervals)
+    /// Grouped data for chart rendering
+    /// - ≤1时: no grouping (raw points)
+    /// - >1时 <1天: group by hour (e.g. "2026-06-05 14")
+    /// - ≥1天: group by day (e.g. "2026-06-05")
     private func currentWindow() -> [(date: String, balance: Double)] {
         let pts = rawWindowData()
         guard !pts.isEmpty else { return [] }
         let mins = intervals[selectedIntervalIndex].minutes
         if mins <= 60 { return pts.map { ($0.date, $0.balance) } }
+
+        let prefixLen = mins >= 1440 ? 10 : 13  // day-level vs hour-level grouping
         var grouped: [String: BalancePoint] = [:]
         for p in pts {
-            let k = String(p.date.prefix(13))
+            let k = String(p.date.prefix(prefixLen))
             if grouped[k] == nil || p.date > grouped[k]!.date { grouped[k] = p }
         }
         return grouped.sorted { $0.key < $1.key }.map { ($0.key, $0.value.balance) }
@@ -294,41 +299,70 @@ class PopoverViewController: NSViewController {
         let container = chartContainer!
         let c = container.bounds.insetBy(dx: 4, dy: 6)
 
-        // Plot area with generous margins for labels
-        let pX: CGFloat = c.minX + 48                       // left edge (room for Y labels)
-        let pY: CGFloat = c.minY + 24                       // bottom edge (room for X labels)
-        let pW: CGFloat = max(c.width - 48 - 14, 20)        // plot width (48 left + 14 right padding)
-        let pH: CGFloat = max(c.height - 24 - 12, 20)       // plot height (24 bottom + 12 top)
+        // Plot area with balanced margins
+        let pX: CGFloat = c.minX + 54                       // left edge (room for Y labels)
+        let pY: CGFloat = c.minY + 22                       // bottom edge (room for X labels)
+        let pW: CGFloat = max(c.width - 54 - 14, 20)        // plot width
+        let pH: CGFloat = max(c.height - 22 - 14, 20)       // plot height (22 bottom + 14 top)
 
         let vals = data.map { $0.balance }
         let lo = vals.min()!, hi = vals.max()!
         let rng = max(hi - lo, 0.01)
 
         // ── Grid lines ──
-        for frac: CGFloat in [0, 0.5, 1] {
+        for frac: CGFloat in [0, 0.25, 0.5, 0.75, 1] {
             let y = pY + frac * pH
             let line = CALayer()
             line.frame = NSRect(x: pX, y: y, width: pW, height: 0.5)
-            line.backgroundColor = NSColor(white: 0.3, alpha: 0.15).cgColor
+            line.backgroundColor = NSColor(white: 0.3, alpha: 0.12).cgColor
             container.layer?.addSublayer(line)
 
-            let lbl = makeAxisLabel(String(format: "¥%.1f", lo + CGFloat(frac) * rng), size: 8, color: .init(white: 0.45, alpha: 0.8))
-            lbl.frame = NSRect(x: c.minX, y: y - 5, width: 36, height: 10)
+            let lbl = makeAxisLabel(String(format: "¥%.1f", lo + Double(frac) * Double(rng)), size: 10, color: .init(white: 0.55, alpha: 0.9))
+            lbl.frame = NSRect(x: c.minX, y: y - 6, width: 44, height: 12)
             lbl.alignmentMode = .right
             container.layer?.addSublayer(lbl)
         }
 
-        // ── X-axis time labels ──
+        // ── X-axis time labels (based on selected window) ──
         let count = data.count
-        let indices = count <= 4 ? Array(0..<count) : [0, count / 4, count / 2, 3 * count / 4, count - 1]
-        for idx in indices {
-            // Skip first label if it would overlap with Y-axis
-            if idx == 0 { continue }
-            let x = pX + (CGFloat(idx) / max(CGFloat(count - 1), 1)) * pW
-            let lbl = makeAxisLabel(shortTime(data[idx].date), size: 8, color: .init(white: 0.45, alpha: 0.8))
-            lbl.frame = NSRect(x: x - 16, y: pY - 16, width: 32, height: 10)
-            lbl.alignmentMode = .center
-            container.layer?.addSublayer(lbl)
+        guard count >= 2 else { return }
+        let mins = intervals[selectedIntervalIndex].minutes
+
+        // Window: from (now - mins) to now
+        let windowEnd = Date()
+        let windowStart = windowEnd.addingTimeInterval(-Double(mins) * 60)
+        let totalSpan = Double(mins) * 60  // full window, not data range
+
+        // Tick interval based on selected time span
+        let tickInterval: TimeInterval
+        if mins <= 5 { tickInterval = 60 }           // every 1 min
+        else if mins <= 60 { tickInterval = 300 }     // every 5 min
+        else if mins <= 1440 { tickInterval = 3600 }  // every 1 hour
+        else { tickInterval = 86400 }                 // every 1 day
+
+        // Round window start up to next clean tick boundary
+        let startSec = windowStart.timeIntervalSinceReferenceDate
+        let roundedStartSec = ceil(startSec / tickInterval) * tickInterval
+        let roundedStart = Date(timeIntervalSinceReferenceDate: roundedStartSec)
+
+        let tickFmt = DateFormatter()
+        tickFmt.dateFormat = mins >= 1440 ? "MM/dd" : "HH:mm"
+
+        var tickDate = roundedStart
+        var lastLabelX: CGFloat = -.infinity
+        let minLabelSpacing: CGFloat = 40
+        while tickDate <= windowEnd {
+            let fraction = (tickDate.timeIntervalSinceReferenceDate - startSec) / totalSpan
+            let x = pX + CGFloat(max(0, fraction)) * pW
+            // Skip first (overlaps Y-axis) or too close to previous
+            if x > pX + 5 && x - lastLabelX >= minLabelSpacing {
+                let lbl = makeAxisLabel(tickFmt.string(from: tickDate), size: 9, color: .init(white: 0.55, alpha: 0.9))
+                lbl.frame = NSRect(x: x - 18, y: pY - 18, width: 36, height: 12)
+                lbl.alignmentMode = .center
+                container.layer?.addSublayer(lbl)
+                lastLabelX = x
+            }
+            tickDate = tickDate.addingTimeInterval(tickInterval)
         }
 
         // ── Build points ──
@@ -428,8 +462,11 @@ class PopoverViewController: NSViewController {
     }
 
     private func shortTime(_ s: String) -> String {
-        if s.count >= 16 { return String(s.suffix(5)) }
-        if s.count >= 13 { return String(s.suffix(2)) + ":00" }
+        if s.count >= 16 { return String(s.suffix(5)) }           // "yyyy-MM-dd HH:mm" → "HH:mm"
+        if s.count >= 13 { return String(s.suffix(2)) + ":00" }   // "yyyy-MM-dd HH" → "HH:00"
+        if s.count >= 10 {                                         // "yyyy-MM-dd" → "MM/dd"
+            return String(s.suffix(5)).replacingOccurrences(of: "-", with: "/")
+        }
         return s
     }
 
@@ -470,6 +507,7 @@ class PopoverViewController: NSViewController {
         let l = CATextLayer()
         l.string = text
         l.fontSize = size
+        l.font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium)
         l.foregroundColor = color.cgColor
         l.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
         return l
