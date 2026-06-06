@@ -285,7 +285,7 @@ class PopoverViewController: NSViewController {
         let mins = intervals[selectedIntervalIndex].minutes
         if mins <= 60 { return pts.map { ($0.date, $0.balance) } }
 
-        let prefixLen = mins >= 1440 ? 10 : 13  // day-level vs hour-level grouping
+        let prefixLen = mins > 1440 ? 10 : 13  // day-level vs hour-level grouping
         var grouped: [String: BalancePoint] = [:]
         for p in pts {
             let k = String(p.date.prefix(prefixLen))
@@ -346,7 +346,7 @@ class PopoverViewController: NSViewController {
         let roundedStart = Date(timeIntervalSinceReferenceDate: roundedStartSec)
 
         let tickFmt = DateFormatter()
-        tickFmt.dateFormat = mins >= 1440 ? "MM/dd" : "HH:mm"
+        tickFmt.dateFormat = mins > 1440 ? "MM/dd" : "HH:mm"
 
         var tickDate = roundedStart
         var lastLabelX: CGFloat = -.infinity
