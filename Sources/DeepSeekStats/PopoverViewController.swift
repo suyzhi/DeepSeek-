@@ -490,15 +490,23 @@ class PopoverViewController: NSViewController {
         line.lineJoin = .round
         curveLayer.addSublayer(line)
 
-        // Morph from previous curve path
+        // Morph from the previous curve when its structure is compatible.
+        // On first render or after the point count changes, rise from a
+        // point-compatible baseline instead of attempting an invalid morph.
+        let baselinePoints = pts.map { CGPoint(x: $0.x, y: pY) }
+        let animationStartPath: CGPath
         if let prevLine = previousLinePath, previousPointCount == pts.count {
-            let morph = CABasicAnimation(keyPath: "path")
-            morph.fromValue = prevLine
-            morph.toValue = smoothPath
-            morph.duration = 0.55
-            morph.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            line.add(morph, forKey: "curveMorph")
+            animationStartPath = prevLine
+        } else {
+            animationStartPath = smoothedPath(baselinePoints)
         }
+
+        let morph = CABasicAnimation(keyPath: "path")
+        morph.fromValue = animationStartPath
+        morph.toValue = smoothPath
+        morph.duration = 0.55
+        morph.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        line.add(morph, forKey: "curveMorph")
         previousLinePath = smoothPath
         previousPointCount = pts.count
 
