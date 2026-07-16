@@ -4,9 +4,7 @@ import Foundation
 // MARK: - Popover View Controller
 class PopoverViewController: NSViewController {
     // MARK: - UI Components
-    private var contentView: NSView!
     private var chartContainer: NSView!
-    private var balanceLabel: NSTextField!
     private var balanceValueLabel: NSTextField!
     private var balanceChangeLabel: NSTextField!
     private var topUpButton: NSButton!
@@ -21,15 +19,19 @@ class PopoverViewController: NSViewController {
     private var sectionIcon: NSTextField!
     private var balanceTitle: NSTextField!
     private var accentDot: NSView!
+    private var refreshButton: NSButton!
+    private var settingsButton: NSButton!
     private var isCompact = false
     private var previousLinePath: CGPath?
+    private var previousPointCount = 0
 
-    private let intervals: [(label: String, minutes: Int)] = [
-        ("5分", 5), ("1时", 60), ("6时", 360), ("12时", 720), ("1天", 1440), ("7天", 10080),
-    ]
+    var onRefresh: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
+
+    private let intervals = ChartInterval.supported
     private var selectedIntervalIndex = 5
-    private var rawHistory: [BalancePoint] = []
-    private var currentBalanceValue: Double = 0
+    private var rawHistory: [BalanceSample] = []
+    private var currentSnapshot: BalanceSnapshot?
 
     // MARK: - Lifecycle
     override func loadView() {
@@ -77,12 +79,26 @@ class PopoverViewController: NSViewController {
         self.titleLabel = titleLabel
 
         // Accent dot next to title
-        let dot = NSView(frame: NSRect(x: 260, y: 0, width: 6, height: 6))
+        let dot = NSView(frame: NSRect(x: 230, y: 0, width: 6, height: 6))
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 3
         dot.layer?.backgroundColor = NSColor(red: 0.3, green: 0.85, blue: 0.5, alpha: 1).cgColor
         root.addSubview(dot)
         accentDot = dot
+
+        refreshButton = makeIconButton(symbol: "arrow.clockwise", fallback: "↻")
+        refreshButton.frame = NSRect(x: 242, y: 0, width: 20, height: 20)
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshClicked)
+        refreshButton.toolTip = "立即刷新"
+        root.addSubview(refreshButton)
+
+        settingsButton = makeIconButton(symbol: "gearshape", fallback: "⚙")
+        settingsButton.frame = NSRect(x: 268, y: 0, width: 20, height: 20)
+        settingsButton.target = self
+        settingsButton.action = #selector(settingsClicked)
+        settingsButton.toolTip = "设置"
+        root.addSubview(settingsButton)
 
         // ── Balance Section ──
         let sectionIcon = makeLabel("💰", size: 13, weight: .regular, color: .white)
@@ -91,7 +107,7 @@ class PopoverViewController: NSViewController {
         self.sectionIcon = sectionIcon
 
         let balanceTitle = makeLabel("余额", size: 12, weight: .medium, color: NSColor(white: 0.75, alpha: 1))
-        balanceTitle.frame = NSRect(x: 40, y: 0, width: 60, height: 18)
+        balanceTitle.frame = NSRect(x: 40, y: 0, width: 190, height: 18)
         root.addSubview(balanceTitle)
         self.balanceTitle = balanceTitle
 
@@ -185,6 +201,14 @@ class PopoverViewController: NSViewController {
         }
     }
 
+    @objc private func refreshClicked() {
+        onRefresh?()
+    }
+
+    @objc private func settingsClicked() {
+        onOpenSettings?()
+    }
+
     @objc private func intervalTapped(_ sender: NSButton) {
         guard sender.tag != selectedIntervalIndex else { return }
         selectedIntervalIndex = sender.tag
@@ -194,25 +218,65 @@ class PopoverViewController: NSViewController {
     }
 
     // MARK: - Public API
-    func showLoading() {
+    func render(_ state: BalanceViewState) {
         loadViewIfNeeded()
-        balanceValueLabel.stringValue = "加载中..."
-        balanceChangeLabel.stringValue = ""
         errorLabel.isHidden = true
-        emptyLabel.isHidden = true
-        loadingSpinner.isHidden = false
-        loadingSpinner.startAnimation(nil)
+        switch state {
+        case .loading(let previous):
+            loadingSpinner.isHidden = false
+            loadingSpinner.startAnimation(nil)
+            refreshButton.isEnabled = false
+            if let previous {
+                currentSnapshot = previous
+                balanceValueLabel.stringValue = MoneyFormatter.string(
+                    amount: previous.amount,
+                    currency: previous.currency
+                )
+                balanceTitle.stringValue = "余额 · 正在刷新"
+            } else {
+                balanceValueLabel.stringValue = "加载中..."
+                balanceTitle.stringValue = "余额"
+                balanceChangeLabel.stringValue = ""
+            }
+
+        case .fresh(let snapshot, let history):
+            stopLoading()
+            apply(snapshot: snapshot, history: history)
+            balanceTitle.stringValue = "余额 · 更新于 \(timeString(snapshot.fetchedAt))"
+            refreshButton.toolTip = "立即刷新"
+
+        case .stale(let snapshot, let history, let error):
+            stopLoading()
+            apply(snapshot: snapshot, history: history)
+            balanceTitle.stringValue = "余额 · 离线缓存 \(timeString(snapshot.fetchedAt))"
+            refreshButton.toolTip = error.localizedDescription
+
+        case .failed(let error):
+            stopLoading()
+            currentSnapshot = nil
+            rawHistory = []
+            balanceValueLabel.stringValue = "加载失败"
+            balanceTitle.stringValue = "余额"
+            balanceChangeLabel.stringValue = ""
+            errorLabel.isHidden = false
+            errorLabel.stringValue = error.localizedDescription
+            refreshChart()
+        }
     }
 
-    func updateBalance(_ balance: BalanceInfo?, history: [BalancePoint]) {
+    private func stopLoading() {
         loadingSpinner.stopAnimation(nil)
         loadingSpinner.isHidden = true
-        rawHistory = history
+        refreshButton.isEnabled = true
+    }
 
-        if let b = balance {
-            currentBalanceValue = Double(b.totalBalance) ?? 0
-            balanceValueLabel.stringValue = String(format: "¥ %.2f", currentBalanceValue)
-        }
+    private func apply(snapshot: BalanceSnapshot, history: [BalanceSample]) {
+        currentSnapshot = snapshot
+        rawHistory = history
+        balanceValueLabel.stringValue = MoneyFormatter.string(
+            amount: snapshot.amount,
+            currency: snapshot.currency
+        )
         updateChangeLabel()
         refreshChart()
     }
@@ -223,46 +287,30 @@ class PopoverViewController: NSViewController {
 
         // Determine if there's meaningful change
         let hasChange: Bool
+        guard let snapshot = currentSnapshot else {
+            balanceChangeLabel.stringValue = ""
+            setCompactMode(true)
+            return
+        }
+        let currentBalanceValue = decimalDouble(snapshot.amount)
         if raw.count >= 2, let first = raw.first {
-            hasChange = abs(currentBalanceValue - first.balance) >= 0.01
+            hasChange = abs(currentBalanceValue - decimalDouble(first.amount)) >= 0.01
         } else {
             hasChange = false
         }
         setCompactMode(!hasChange)
 
-        // Debug: log to file
-        let debugMsg: String
-        if raw.count >= 2 {
-            let firstDate = raw.first!.date
-            let lastDate = raw.last!.date
-            let firstBal = raw.first!.balance
-            let lastBal = raw.last!.balance
-            let rawChg = lastBal - firstBal
-            let withCurrent = currentBalanceValue - firstBal
-            debugMsg = "[DEBUG] \(intervalName): raw pts=\(raw.count), first=\(firstDate) \(String(format: "%.2f", firstBal)), last=\(lastDate) \(String(format: "%.2f", lastBal)), rawΔ=\(String(format: "%.2f", rawChg)), withCurrentΔ=\(String(format: "%.2f", withCurrent)), currentBalanceValue=\(String(format: "%.2f", currentBalanceValue))"
-        } else if raw.count == 1 {
-            debugMsg = "[DEBUG] \(intervalName): only 1 raw pt: \(raw.first!.date) \(String(format: "%.2f", raw.first!.balance))"
-        } else {
-            debugMsg = "[DEBUG] \(intervalName): no raw data"
-        }
-        print(debugMsg)
-        if let logURL = try? FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("DeepSeekStats_debug.log") {
-            if let handle = try? FileHandle(forWritingTo: logURL) {
-                handle.seekToEndOfFile()
-                handle.write((debugMsg + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            } else {
-                try? debugMsg.data(using: .utf8)?.write(to: logURL)
-            }
-        }
-
         if raw.count >= 2, let first = raw.first {
-            let chg = currentBalanceValue - first.balance
+            let chg = currentBalanceValue - decimalDouble(first.amount)
+            let formatted = MoneyFormatter.string(
+                amount: Decimal(abs(chg)),
+                currency: snapshot.currency
+            )
             if chg < -0.01 {
-                balanceChangeLabel.stringValue = "近\(intervalName)消费 ¥ \(String(format: "%.2f", abs(chg)))"
+                balanceChangeLabel.stringValue = "近\(intervalName)消费 \(formatted)"
                 balanceChangeLabel.textColor = NSColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
             } else if chg > 0.01 {
-                balanceChangeLabel.stringValue = "近\(intervalName)充值 ¥ \(String(format: "%.2f", chg))"
+                balanceChangeLabel.stringValue = "近\(intervalName)充值 \(formatted)"
                 balanceChangeLabel.textColor = NSColor(red: 0.4, green: 1, blue: 0.5, alpha: 1)
             } else {
                 balanceChangeLabel.stringValue = "近\(intervalName)无变动"
@@ -276,38 +324,29 @@ class PopoverViewController: NSViewController {
         }
     }
 
-    func showBalanceError(_ err: String) {
-        loadingSpinner.stopAnimation(nil)
-        loadingSpinner.isHidden = true
-        balanceValueLabel.stringValue = "加载失败"
-        errorLabel.isHidden = false
-        errorLabel.stringValue = err
-    }
-
     // MARK: - Chart
     private func refreshChart() {
-        let data = currentWindow()
-        if data.count >= 2 {
+        if let series = currentWindow(), series.points.count >= 2 {
             emptyLabel.isHidden = true
             // Capture old chart as bitmap for crossfade
             let snapshot = captureChartBitmap()
-            drawChart(data, oldSnapshot: snapshot)
+            drawChart(series, oldSnapshot: snapshot)
         } else {
             emptyLabel.isHidden = false
             chartContainer.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
             previousLinePath = nil
+            previousPointCount = 0
         }
     }
 
     /// Raw (un-grouped) data points within the selected time window
-    private func rawWindowData() -> [BalancePoint] {
-        guard !rawHistory.isEmpty else { return [] }
-        let mins = intervals[selectedIntervalIndex].minutes
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd HH:mm"
-        let cutoff = Calendar.current.date(byAdding: .minute, value: -mins, to: Date())!
-        return rawHistory.filter { fmt.date(from: $0.date).map { $0 >= cutoff } ?? false }
-            .sorted { $0.date < $1.date }
+    private func rawWindowData() -> [BalanceSample] {
+        guard let snapshot = currentSnapshot else { return [] }
+        let cutoff = Date().addingTimeInterval(-TimeInterval(intervals[selectedIntervalIndex].minutes * 60))
+        return rawHistory.filter {
+            $0.currency.caseInsensitiveCompare(snapshot.currency) == .orderedSame
+                && $0.timestamp >= cutoff
+        }.sorted { $0.timestamp < $1.timestamp }
     }
 
     /// Grouped data for chart rendering
@@ -315,31 +354,17 @@ class PopoverViewController: NSViewController {
     /// - >1时 <1天: group by hour (e.g. "2026-06-05 14")
     /// - ≥1天: group by day (e.g. "2026-06-05")
     /// - Each group keeps first AND last point to preserve the full value range
-    private func currentWindow() -> [(date: String, balance: Double)] {
-        let pts = rawWindowData()
-        guard !pts.isEmpty else { return [] }
-        let mins = intervals[selectedIntervalIndex].minutes
-        if mins <= 60 { return pts.map { ($0.date, $0.balance) } }
-
-        let prefixLen = mins > 1440 ? 10 : 13  // day-level vs hour-level grouping
-        var firstIn: [String: BalancePoint] = [:]
-        var lastIn: [String: BalancePoint] = [:]
-        for p in pts {
-            let k = String(p.date.prefix(prefixLen))
-            if firstIn[k] == nil || p.date < firstIn[k]!.date { firstIn[k] = p }
-            if lastIn[k] == nil || p.date > lastIn[k]!.date { lastIn[k] = p }
-        }
-        // Merge first+last per group, sorted by group key
-        var result: [(date: String, balance: Double)] = []
-        let keys = Set(Array(firstIn.keys) + Array(lastIn.keys)).sorted()
-        for key in keys {
-            if let f = firstIn[key] { result.append((f.date, f.balance)) }
-            if let l = lastIn[key], l.date != firstIn[key]?.date { result.append((l.date, l.balance)) }
-        }
-        return result
+    private func currentWindow() -> ChartSeries? {
+        guard let snapshot = currentSnapshot else { return nil }
+        return ChartSeriesBuilder.build(
+            samples: rawHistory,
+            currency: snapshot.currency,
+            interval: intervals[selectedIntervalIndex],
+            endingAt: Date()
+        )
     }
 
-    private func drawChart(_ data: [(date: String, balance: Double)], oldSnapshot: CGImage?) {
+    private func drawChart(_ series: ChartSeries, oldSnapshot: CGImage?) {
         chartContainer.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
         let container = chartContainer!
         let c = container.bounds.insetBy(dx: 4, dy: 6)
@@ -350,12 +375,13 @@ class PopoverViewController: NSViewController {
         let pW: CGFloat = max(c.width - 54 - 14, 20)        // plot width
         let pH: CGFloat = max(c.height - 22 - 14, 20)       // plot height (22 bottom + 14 top)
 
-        let vals = data.map { $0.balance }
-        let lo = vals.min()!, hi = vals.max()!
-        let rng = max(hi - lo, 0.01)
+        let vals = series.points.map { decimalDouble($0.amount) }
+        let lo = series.minimum
+        let hi = series.maximum
+        let rng = max(hi - lo, 0.000_001)
 
         // ── Time window params (used by both X-axis labels AND data points) ──
-        let count = data.count
+        let count = series.points.count
         guard count >= 2 else { return }
         let mins = intervals[selectedIntervalIndex].minutes
         let windowEnd = Date()
@@ -371,7 +397,11 @@ class PopoverViewController: NSViewController {
             line.backgroundColor = NSColor(white: 0.3, alpha: 0.12).cgColor
             container.layer?.addSublayer(line)
 
-            let lbl = makeAxisLabel(String(format: "¥%.1f", lo + Double(frac) * Double(rng)), size: 10, color: .init(white: 0.55, alpha: 0.9))
+            let amount = Decimal(lo + Double(frac) * rng)
+            let label = currentSnapshot.map {
+                MoneyFormatter.string(amount: amount, currency: $0.currency, fractionDigits: 1)
+            } ?? String(format: "%.1f", NSDecimalNumber(decimal: amount).doubleValue)
+            let lbl = makeAxisLabel(label, size: 10, color: .init(white: 0.55, alpha: 0.9))
             lbl.frame = NSRect(x: c.minX, y: y - 6, width: pX - c.minX - 4, height: 12)
             lbl.alignmentMode = .left
             container.layer?.addSublayer(lbl)
@@ -410,10 +440,11 @@ class PopoverViewController: NSViewController {
             tickDate = tickDate.addingTimeInterval(tickInterval)
         }
 
-        // ── Build points (evenly spaced to always fill chart width) ──
+        // ── Build points using their actual timestamp within the selected window ──
         var pts: [CGPoint] = []
         for (i, v) in vals.enumerated() {
-            let x = pX + (CGFloat(i) / max(CGFloat(count - 1), 1)) * pW
+            let fraction = series.xFraction(for: series.points[i].timestamp)
+            let x = pX + CGFloat(fraction) * pW
             let y = pY + CGFloat((v - lo) / rng) * pH
             pts.append(CGPoint(x: x, y: y))
         }
@@ -460,7 +491,7 @@ class PopoverViewController: NSViewController {
         curveLayer.addSublayer(line)
 
         // Morph from previous curve path
-        if let prevLine = previousLinePath {
+        if let prevLine = previousLinePath, previousPointCount == pts.count {
             let morph = CABasicAnimation(keyPath: "path")
             morph.fromValue = prevLine
             morph.toValue = smoothPath
@@ -469,6 +500,7 @@ class PopoverViewController: NSViewController {
             line.add(morph, forKey: "curveMorph")
         }
         previousLinePath = smoothPath
+        previousPointCount = pts.count
 
         // ── Smooth fill (wipe from top to bottom after curve morph) ──
         let fillPath = CGMutablePath()
@@ -656,6 +688,8 @@ class PopoverViewController: NSViewController {
         y += 14
         titleLabel.frame.origin.y = y
         accentDot.frame.origin.y = y + 8
+        refreshButton.frame.origin.y = y + 1
+        settingsButton.frame.origin.y = y + 1
         y += 22
 
         // y now equals view.bounds.height - topPadding (computed from isCompact)
@@ -693,15 +727,6 @@ class PopoverViewController: NSViewController {
         }
     }
 
-    private func shortTime(_ s: String) -> String {
-        if s.count >= 16 { return String(s.suffix(5)) }           // "yyyy-MM-dd HH:mm" → "HH:mm"
-        if s.count >= 13 { return String(s.suffix(2)) + ":00" }   // "yyyy-MM-dd HH" → "HH:00"
-        if s.count >= 10 {                                         // "yyyy-MM-dd" → "MM/dd"
-            return String(s.suffix(5)).replacingOccurrences(of: "-", with: "/")
-        }
-        return s
-    }
-
     private func addSeparator(y: CGFloat, root: NSView) {
         let sep = NSView(frame: NSRect(x: 18, y: y, width: 264, height: 1))
         sep.wantsLayer = true
@@ -724,6 +749,31 @@ class PopoverViewController: NSViewController {
             attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .paragraphStyle: ps]
         )
         return btn
+    }
+
+    private func makeIconButton(symbol: String, fallback: String) -> NSButton {
+        let button = NSButton(frame: .zero)
+        button.isBordered = false
+        button.focusRingType = .none
+        button.imagePosition = .imageOnly
+        button.contentTintColor = NSColor(white: 0.78, alpha: 1)
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: fallback) {
+            button.image = image
+        } else {
+            button.title = fallback
+        }
+        return button
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM/dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func decimalDouble(_ value: Decimal) -> Double {
+        NSDecimalNumber(decimal: value).doubleValue
     }
 
     private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {

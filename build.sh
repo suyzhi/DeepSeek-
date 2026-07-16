@@ -1,27 +1,27 @@
 #!/bin/bash
-# Build and package DeepSeekStats as a macOS .app bundle
-set -e
+# Build, sign and package DeepSeekStats for local macOS distribution.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="DeepSeekStats"
-BUILD_DIR="$SCRIPT_DIR/.build/arm64-apple-macosx/debug"
-ENTITLEMENTS="$SCRIPT_DIR/$APP_NAME.entitlements"
+VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")"
+CONFIGURATION="release"
+DIST_DIR="$SCRIPT_DIR/dist"
+APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
+ZIP_PATH="$DIST_DIR/$APP_NAME-$VERSION.zip"
 
-# Step 1: Build the Swift package
 cd "$SCRIPT_DIR"
-swift build -c debug
+swift build -c "$CONFIGURATION"
+BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
 
-# Step 2: Create .app bundle structure
-APP_BUNDLE="$SCRIPT_DIR/build/$APP_NAME.app"
-rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$DIST_DIR"
+if [[ -e "$APP_BUNDLE" ]]; then
+    rm -rf "$APP_BUNDLE"
+fi
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+cp "$BIN_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-# Step 3: Copy the binary
-cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-
-# Step 4: Create Info.plist
-cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
+cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -31,11 +31,13 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
     <key>CFBundleIdentifier</key>
     <string>com.deepseek.stats</string>
     <key>CFBundleName</key>
-    <string>DeepSeekStats</string>
+    <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>$APP_NAME</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>$VERSION</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -48,18 +50,14 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
 </plist>
 EOF
 
-# Step 5: Sign the app (ad-hoc signature for local use)
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+plutil -lint "$APP_BUNDLE/Contents/Info.plist"
+codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
-echo ""
-echo "✅ Build complete!"
-echo "App bundle: $APP_BUNDLE"
-echo ""
-echo "To install, copy to Applications:"
-echo "  cp -R \"$APP_BUNDLE\" /Applications/"
-echo ""
-echo "To launch:"
-echo "  open \"$APP_BUNDLE\""
-echo ""
-echo "To autostart on login:"
-echo '  osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"/Applications/DeepSeekStats.app\", hidden:false}"'
+if [[ -e "$ZIP_PATH" ]]; then
+    rm -f "$ZIP_PATH"
+fi
+ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+
+echo "Build complete: $APP_BUNDLE"
+echo "Archive: $ZIP_PATH"
