@@ -276,6 +276,25 @@ struct ChartSeriesBuilderTests {
         #expect(series.xFraction(for: series.points[2].timestamp) == 1)
     }
 
+    @Test func testObservedSeriesFillsPlotWithoutLosingTimeSpacing() {
+        let end = Date(timeIntervalSince1970: 10_000)
+        let samples = [
+            BalanceSample(timestamp: end.addingTimeInterval(-240), amount: 10, currency: "CNY"),
+            BalanceSample(timestamp: end.addingTimeInterval(-180), amount: 9, currency: "CNY"),
+            BalanceSample(timestamp: end, amount: 8, currency: "CNY"),
+        ]
+        let series = ChartSeriesBuilder.build(
+            samples: samples,
+            currency: "CNY",
+            interval: ChartInterval(label: "5分", minutes: 5),
+            endingAt: end
+        )
+
+        #expect(series.xFraction(for: series.points[0].timestamp) == 0)
+        #expect(abs(series.xFraction(for: series.points[1].timestamp) - 0.25) < 0.0001)
+        #expect(series.xFraction(for: series.points[2].timestamp) == 1)
+    }
+
     @Test func testAggregationPreservesInteriorExtremes() {
         let end = Date(timeIntervalSince1970: 20_000)
         let base = end.addingTimeInterval(-3_000)

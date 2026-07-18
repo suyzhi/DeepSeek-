@@ -53,7 +53,15 @@ enum ChartSeriesBuilder {
             .map { ChartPoint(timestamp: $0.timestamp, amount: $0.amount) }
         let values = points.map { ($0.amount as NSDecimalNumber).doubleValue }
         let domain = yDomain(values)
-        return ChartSeries(start: start, end: end, points: points, minimum: domain.min, maximum: domain.max)
+        let displayStart = points.first?.timestamp ?? start
+        let displayEnd = points.last?.timestamp ?? end
+        return ChartSeries(
+            start: displayStart,
+            end: displayEnd,
+            points: points,
+            minimum: domain.min,
+            maximum: domain.max
+        )
     }
 
     private static func bucketSize(for interval: ChartInterval) -> TimeInterval {

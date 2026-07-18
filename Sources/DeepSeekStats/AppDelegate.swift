@@ -49,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = popoverVC
         popover.behavior = .transient
         popover.animates = true
+        popoverVC.onContentSizeChange = { [weak self] size in
+            self?.popover.contentSize = size
+        }
 
         coordinator.onStateChange = { [weak self] state in
             self?.popoverVC.render(state)

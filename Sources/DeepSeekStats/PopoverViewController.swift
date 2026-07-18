@@ -24,9 +24,11 @@ class PopoverViewController: NSViewController {
     private var isCompact = false
     private var previousLinePath: CGPath?
     private var previousPointCount = 0
+    private var isAnimatingCompactTransition = false
 
     var onRefresh: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onContentSizeChange: ((NSSize) -> Void)?
 
     private let intervals = ChartInterval.supported
     private var selectedIntervalIndex = 5
@@ -46,6 +48,7 @@ class PopoverViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        guard !isAnimatingCompactTransition else { return }
         relayout()
     }
 
@@ -381,13 +384,11 @@ class PopoverViewController: NSViewController {
         let rng = max(hi - lo, 0.000_001)
 
         // ── Time window params (used by both X-axis labels AND data points) ──
-        let count = series.points.count
-        guard count >= 2 else { return }
-        let mins = intervals[selectedIntervalIndex].minutes
-        let windowEnd = Date()
-        let windowStart = windowEnd.addingTimeInterval(-Double(mins) * 60)
+        guard series.points.count >= 2 else { return }
+        let windowEnd = series.end
+        let windowStart = series.start
         let startSec = windowStart.timeIntervalSinceReferenceDate
-        let totalSpan = Double(mins) * 60  // full window, not data range
+        let totalSpan = max(windowEnd.timeIntervalSince(windowStart), 1)
 
         // ── Grid lines ──
         for frac: CGFloat in [0, 0.25, 0.5, 0.75, 1] {
@@ -411,9 +412,10 @@ class PopoverViewController: NSViewController {
 
         // Tick interval based on selected time span
         let tickInterval: TimeInterval
-        if mins <= 5 { tickInterval = 60 }           // every 1 min
-        else if mins <= 60 { tickInterval = 300 }     // every 5 min
-        else if mins <= 1440 { tickInterval = 3600 }  // every 1 hour
+        let displayedMinutes = totalSpan / 60
+        if displayedMinutes <= 5 { tickInterval = 60 }           // every 1 min
+        else if displayedMinutes <= 60 { tickInterval = 300 }     // every 5 min
+        else if displayedMinutes <= 1440 { tickInterval = 3600 }  // every 1 hour
         else { tickInterval = 86400 }                 // every 1 day
 
         // Round window start up to next clean tick boundary
@@ -421,7 +423,7 @@ class PopoverViewController: NSViewController {
         let roundedStart = Date(timeIntervalSinceReferenceDate: roundedStartSec)
 
         let tickFmt = DateFormatter()
-        tickFmt.dateFormat = mins > 1440 ? "MM/dd" : "HH:mm"
+        tickFmt.dateFormat = displayedMinutes > 1440 ? "MM/dd" : "HH:mm"
 
         var tickDate = roundedStart
         var lastLabelX: CGFloat = -.infinity
@@ -705,17 +707,61 @@ class PopoverViewController: NSViewController {
 
     private func setCompactMode(_ compact: Bool) {
         guard isCompact != compact else { return }
+        var transitionViews: [NSView] = []
+        transitionViews.append(chartContainer)
+        transitionViews.append(chartIconLabel)
+        transitionViews.append(chartTitleLabel)
+        transitionViews.append(separatorLine)
+        transitionViews.append(balanceChangeLabel)
+        transitionViews.append(balanceValueLabel)
+        transitionViews.append(topUpButton)
+        transitionViews.append(sectionIcon)
+        transitionViews.append(balanceTitle)
+        transitionViews.append(titleLabel)
+        transitionViews.append(accentDot)
+        transitionViews.append(refreshButton)
+        transitionViews.append(settingsButton)
+        transitionViews.append(contentsOf: intervalButtons)
+        let originalFrames = transitionViews.map(\.frame)
+
         isCompact = compact
+        isAnimatingCompactTransition = true
 
-        balanceChangeLabel.isHidden = compact
-
-        // Use preferredContentSize so NSPopover handles resize+animation properly
-        let h = compact ? CGFloat(354) : CGFloat(370)
-        preferredContentSize = NSSize(width: 300, height: h)
-
-        // Relayout after size change — viewDidLayout will also call relayout,
-        // but calling it here ensures positions are correct immediately
+        // Calculate the target layout, then restore the current frames so AppKit
+        // can interpolate every element instead of jumping to its new position.
         relayout()
+        let targetFrames = transitionViews.map(\.frame)
+        for (subview, frame) in zip(transitionViews, originalFrames) {
+            subview.frame = frame
+        }
+
+        if !compact {
+            balanceChangeLabel.isHidden = false
+            balanceChangeLabel.alphaValue = 0
+        }
+
+        let targetSize = NSSize(width: 300, height: compact ? 354 : 370)
+        preferredContentSize = targetSize
+        onContentSizeChange?(targetSize)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.28
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+
+            for (subview, frame) in zip(transitionViews, targetFrames) {
+                subview.animator().frame = frame
+            }
+            balanceChangeLabel.animator().alphaValue = compact ? 0 : 1
+        } completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.balanceChangeLabel.isHidden = compact
+                self.balanceChangeLabel.alphaValue = 1
+                self.isAnimatingCompactTransition = false
+                self.relayout()
+            }
+        }
     }
 
     private func highlightInterval(at idx: Int) {
