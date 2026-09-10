@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image.lockFocus()
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: 11),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: NSColor.white,
         ]
         "DS".draw(at: NSPoint(x: 1, y: 1), withAttributes: attributes)
         indicator.color.setFill()
