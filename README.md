@@ -51,6 +51,8 @@ DeepSeekStats 是一个 macOS 菜单栏应用，用于查看 DeepSeek API 余额
 swift test --disable-sandbox
 ```
 
+仓库已配置 GitHub Actions（`.github/workflows/ci.yml`），推送或提交 PR 时会自动执行同一套测试。
+
 生成本地签名的 Release 应用和 zip：
 
 ```bash

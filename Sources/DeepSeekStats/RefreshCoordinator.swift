@@ -25,7 +25,9 @@ final class RefreshCoordinator {
         guard task == nil else { return }
         generation += 1
         let currentGeneration = generation
-        setState(.loading(previous: state.snapshot))
+        if shouldShowLoading(for: reason) {
+            setState(.loading(previous: state.snapshot))
+        }
         task = Task { [weak self] in
             guard let self else { return }
             await self.performRefresh()
@@ -42,6 +44,17 @@ final class RefreshCoordinator {
         refresh(reason: reason)
     }
 
+    /// Background timer refreshes keep the current snapshot on screen so the
+    /// status dot does not flash gray on every interval.
+    private func shouldShowLoading(for reason: RefreshReason) -> Bool {
+        switch reason {
+        case .launch, .popover, .manual, .settingsChanged:
+            return true
+        case .timer:
+            return state.snapshot == nil
+        }
+    }
+
     private func performRefresh() async {
         do {
             let apiKey = try await keyProvider.apiKey()
@@ -52,8 +65,7 @@ final class RefreshCoordinator {
                 amount: snapshot.amount,
                 currency: snapshot.currency
             )
-            try await historyStore.add(sample)
-            let history = try await historyStore.load()
+            let history = try await historyStore.add(sample)
             try Task.checkCancellation()
             setState(.fresh(snapshot: snapshot, history: history))
         } catch is CancellationError {

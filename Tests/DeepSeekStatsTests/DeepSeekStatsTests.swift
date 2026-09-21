@@ -127,6 +127,30 @@ struct DeepSeekAPIClientTests {
         }
     }
 
+    @Test func testMapsRateLimitAndTransportFailures() async {
+        await expectAPIError(.rateLimited) {
+            _ = try await makeClient(status: 429, json: "{\"error\":\"rate limit\"}")
+                .fetchBalance(apiKey: "key")
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let url = URL(string: "https://example.invalid/balance")!
+        MockURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        let client = DeepSeekAPIClient(session: URLSession(configuration: configuration), endpoint: url)
+        do {
+            _ = try await client.fetchBalance(apiKey: "key")
+            Issue.record("Expected transport error")
+        } catch let error as APIError {
+            guard case .transport = error else {
+                Issue.record("Expected transport error, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     private func makeClient(status: Int, json: String, now: Date = Date()) -> DeepSeekAPIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
@@ -329,6 +353,24 @@ struct ChartSeriesBuilderTests {
         )
         #expect(abs((10 - series.minimum) - (series.maximum - 10)) < 0.0001)
     }
+
+    @Test func testWindowedSamplesFilterCurrencyAndWindow() {
+        let end = Date(timeIntervalSince1970: 10_000)
+        let samples = [
+            BalanceSample(timestamp: end.addingTimeInterval(-60), amount: 1, currency: "CNY"),
+            BalanceSample(timestamp: end.addingTimeInterval(-60), amount: 2, currency: "USD"),
+            BalanceSample(timestamp: end.addingTimeInterval(-1_000), amount: 3, currency: "CNY"),
+            BalanceSample(timestamp: end.addingTimeInterval(60), amount: 4, currency: "CNY"),
+        ]
+        let windowed = ChartSeriesBuilder.windowedSamples(
+            samples: samples,
+            currency: "CNY",
+            interval: ChartInterval(label: "5分", minutes: 5),
+            endingAt: end
+        )
+        #expect(windowed.count == 1)
+        #expect(windowed[0].amount == 1)
+    }
 }
 
 @Suite(.serialized)
@@ -358,6 +400,38 @@ struct APIKeyProviderTests {
 
         #expect(try await provider.apiKey() == "legacy-key")
         #expect(store.read() == "legacy-key")
+    }
+
+    @Test func testSourceReportsEachConfiguration() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let legacy = directory.appendingPathComponent(".env")
+        try Data("DEEPSEEK_API_KEY=legacy".utf8).write(to: legacy)
+
+        let keychain = APIKeyProvider(
+            keyStore: MemoryKeyStore("stored"),
+            environment: { ["DEEPSEEK_API_KEY": "env"] },
+            legacyFileURL: legacy
+        )
+        #expect(await keychain.source() == .keychain)
+
+        let environment = APIKeyProvider(
+            keyStore: MemoryKeyStore(nil),
+            environment: { ["DEEPSEEK_API_KEY": "env"] },
+            legacyFileURL: legacy
+        )
+        #expect(await environment.source() == .environment)
+
+        let file = APIKeyProvider(keyStore: MemoryKeyStore(nil), environment: { [:] }, legacyFileURL: legacy)
+        #expect(await file.source() == .legacyFile)
+
+        let missing = APIKeyProvider(
+            keyStore: MemoryKeyStore(nil),
+            environment: { [:] },
+            legacyFileURL: directory.appendingPathComponent("missing.env")
+        )
+        #expect(await missing.source() == .missing)
     }
 }
 
@@ -404,6 +478,67 @@ struct RefreshCoordinatorTests {
         #expect(callCount == 1)
     }
 
+    @Test func testSuccessPathProducesFreshState() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fetched = Date(timeIntervalSince1970: 5_000)
+        let store = BalanceHistoryStore(fileURL: directory.appendingPathComponent("history.json"), now: { fetched })
+        let api = StubAPIClient(result: .success(BalanceSnapshot(amount: 10, currency: "CNY", fetchedAt: fetched)))
+        let provider = APIKeyProvider(keyStore: MemoryKeyStore("key"), environment: { [:] })
+        let coordinator = RefreshCoordinator(apiClient: api, historyStore: store, keyProvider: provider)
+
+        coordinator.refresh(reason: .manual)
+        await waitUntilFinished(coordinator)
+
+        guard case .fresh(let snapshot, let history) = coordinator.state else {
+            Issue.record("Expected fresh state")
+            return
+        }
+        #expect(snapshot.amount == 10)
+        #expect(history.count == 1)
+    }
+
+    @Test func testTimerRefreshKeepsCachedSnapshotVisible() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fetched = Date(timeIntervalSince1970: 5_000)
+        let store = BalanceHistoryStore(fileURL: directory.appendingPathComponent("history.json"), now: { fetched })
+        let api = StubAPIClient(result: .success(BalanceSnapshot(amount: 10, currency: "CNY", fetchedAt: fetched)))
+        let provider = APIKeyProvider(keyStore: MemoryKeyStore("key"), environment: { [:] })
+        let coordinator = RefreshCoordinator(apiClient: api, historyStore: store, keyProvider: provider)
+
+        coordinator.refresh(reason: .manual)
+        await waitUntilFinished(coordinator)
+
+        coordinator.refresh(reason: .timer)
+        if case .loading = coordinator.state {
+            Issue.record("Timer refresh should not show a loading state when a snapshot is cached")
+        }
+        await waitUntilFinished(coordinator)
+    }
+
+    @Test func testMissingAPIKeyWithoutCacheFails() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = BalanceHistoryStore(fileURL: directory.appendingPathComponent("history.json"))
+        let api = StubAPIClient(result: .success(BalanceSnapshot(amount: 1, currency: "CNY", fetchedAt: Date())))
+        let provider = APIKeyProvider(
+            keyStore: MemoryKeyStore(nil),
+            environment: { [:] },
+            legacyFileURL: directory.appendingPathComponent("missing.env")
+        )
+        let coordinator = RefreshCoordinator(apiClient: api, historyStore: store, keyProvider: provider)
+
+        coordinator.refresh(reason: .manual)
+        await waitUntilFinished(coordinator)
+
+        guard case .failed(let error) = coordinator.state else {
+            Issue.record("Expected failed state")
+            return
+        }
+        #expect(error == .missingAPIKey)
+    }
+
     private func waitUntilFinished(_ coordinator: RefreshCoordinator) async {
         for _ in 0..<100 {
             if case .loading = coordinator.state {
@@ -413,5 +548,52 @@ struct RefreshCoordinatorTests {
             }
         }
         Issue.record("Refresh did not finish")
+    }
+}
+
+@MainActor
+struct BalanceChangeCalculatorTests {
+    private func snapshot(_ amount: String, currency: String = "CNY") -> BalanceSnapshot {
+        BalanceSnapshot(
+            amount: Decimal(string: amount)!,
+            currency: currency,
+            fetchedAt: Date(timeIntervalSince1970: 1_000)
+        )
+    }
+
+    @Test func testNoSamplesIsNone() {
+        let change = BalanceChangeCalculator.compute(snapshot: snapshot("10"), windowSamples: [])
+        #expect(change == .none)
+        #expect(!change.isMeaningful)
+    }
+
+    @Test func testSingleSampleIsUnchanged() {
+        let sample = BalanceSample(timestamp: Date(timeIntervalSince1970: 1_000), amount: 10, currency: "CNY")
+        let change = BalanceChangeCalculator.compute(snapshot: snapshot("10"), windowSamples: [sample])
+        #expect(change == .unchanged)
+        #expect(!change.isMeaningful)
+    }
+
+    @Test func testDetectsSpendingAndTopUp() {
+        let start = BalanceSample(timestamp: Date(timeIntervalSince1970: 1_000), amount: 10, currency: "CNY")
+        let end = BalanceSample(timestamp: Date(timeIntervalSince1970: 1_060), amount: 12, currency: "CNY")
+        #expect(BalanceChangeCalculator.compute(snapshot: snapshot("5"), windowSamples: [start, end])
+            == .spent(Decimal(string: "5")!))
+        #expect(BalanceChangeCalculator.compute(snapshot: snapshot("15"), windowSamples: [start, end])
+            == .toppedUp(Decimal(string: "5")!))
+    }
+
+    @Test func testSubCentChangeIsIgnored() {
+        let start = BalanceSample(timestamp: Date(timeIntervalSince1970: 1_000), amount: 10, currency: "CNY")
+        let end = BalanceSample(timestamp: Date(timeIntervalSince1970: 1_060), amount: 10, currency: "CNY")
+        #expect(BalanceChangeCalculator.compute(snapshot: snapshot("10.009"), windowSamples: [start, end]) == .unchanged)
+    }
+}
+
+@MainActor
+struct MoneyFormatterTests {
+    @Test func testFormatsAmountWithRequestedPrecision() {
+        let value = MoneyFormatter.string(amount: Decimal(string: "42.256")!, currency: "cny")
+        #expect(value.contains("42.26"))
     }
 }

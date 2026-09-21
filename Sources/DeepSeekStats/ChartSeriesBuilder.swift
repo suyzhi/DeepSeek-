@@ -41,13 +41,12 @@ enum ChartSeriesBuilder {
         endingAt end: Date
     ) -> ChartSeries {
         let start = end.addingTimeInterval(-TimeInterval(interval.minutes * 60))
-        let filtered = samples
-            .filter {
-                $0.currency.caseInsensitiveCompare(currency) == .orderedSame
-                    && $0.timestamp >= start
-                    && $0.timestamp <= end
-            }
-            .sorted { $0.timestamp < $1.timestamp }
+        let filtered = windowedSamples(
+            samples: samples,
+            currency: currency,
+            interval: interval,
+            endingAt: end
+        )
 
         let points = aggregate(filtered, bucketSize: bucketSize(for: interval))
             .map { ChartPoint(timestamp: $0.timestamp, amount: $0.amount) }
@@ -62,6 +61,24 @@ enum ChartSeriesBuilder {
             minimum: domain.min,
             maximum: domain.max
         )
+    }
+
+    /// Currency-filtered, time-windowed samples sorted by timestamp.
+    /// Shared by the chart and the balance-change calculation.
+    static func windowedSamples(
+        samples: [BalanceSample],
+        currency: String,
+        interval: ChartInterval,
+        endingAt end: Date
+    ) -> [BalanceSample] {
+        let start = end.addingTimeInterval(-TimeInterval(interval.minutes * 60))
+        return samples
+            .filter {
+                $0.currency.caseInsensitiveCompare(currency) == .orderedSame
+                    && $0.timestamp >= start
+                    && $0.timestamp <= end
+            }
+            .sorted { $0.timestamp < $1.timestamp }
     }
 
     private static func bucketSize(for interval: ChartInterval) -> TimeInterval {

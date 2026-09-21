@@ -2,7 +2,7 @@ import Foundation
 
 protocol BalanceHistoryStoreProtocol: Sendable {
     func load() async throws -> [BalanceSample]
-    func add(_ sample: BalanceSample) async throws
+    @discardableResult func add(_ sample: BalanceSample) async throws -> [BalanceSample]
     func clear() async throws
 }
 
@@ -19,6 +19,7 @@ actor BalanceHistoryStore: BalanceHistoryStoreProtocol {
     private let defaultsSuiteName: String?
     private let now: @Sendable () -> Date
     private let retention: TimeInterval
+    private var cachedSamples: [BalanceSample]?
 
     init(
         fileURL: URL? = nil,
@@ -40,7 +41,19 @@ actor BalanceHistoryStore: BalanceHistoryStoreProtocol {
 
     func load() async throws -> [BalanceSample] {
         try migrateLegacyIfNeeded()
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+
+        // Keep the decoded history in memory so a refresh does not pay for
+        // decoding the whole 30-day file twice (add + reload).
+        if let cached = cachedSamples {
+            let normalized = normalize(cached)
+            cachedSamples = normalized
+            return normalized
+        }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            cachedSamples = []
+            defaults.removeObject(forKey: Self.legacyDefaultsKey)
+            return []
+        }
 
         do {
             let data = try Data(contentsOf: fileURL)
@@ -50,15 +63,18 @@ actor BalanceHistoryStore: BalanceHistoryStoreProtocol {
                 samples = normalized
                 try save(samples)
             }
+            cachedSamples = samples
             defaults.removeObject(forKey: Self.legacyDefaultsKey)
             return samples
         } catch {
             try quarantineCorruptFile()
+            cachedSamples = []
             return []
         }
     }
 
-    func add(_ sample: BalanceSample) async throws {
+    @discardableResult
+    func add(_ sample: BalanceSample) async throws -> [BalanceSample] {
         var samples = try await load()
         let key = minuteKey(for: sample)
         samples.removeAll { minuteKey(for: $0) == key }
@@ -67,13 +83,17 @@ actor BalanceHistoryStore: BalanceHistoryStoreProtocol {
             amount: sample.amount,
             currency: sample.currency.uppercased()
         ))
-        try save(normalize(samples))
+        let normalized = normalize(samples)
+        try save(normalized)
+        cachedSamples = normalized
+        return normalized
     }
 
     func clear() async throws {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
+        cachedSamples = []
         defaults.removeObject(forKey: Self.legacyDefaultsKey)
     }
 
@@ -143,7 +163,8 @@ actor BalanceHistoryStore: BalanceHistoryStoreProtocol {
     private var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Machine-read file: pretty printing only bloats it and slows writes.
+        encoder.outputFormatting = [.sortedKeys]
         return encoder
     }
 

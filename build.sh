@@ -51,8 +51,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 EOF
 
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
-codesign --force --deep --sign - "$APP_BUNDLE"
-codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+codesign --force --sign - "$APP_BUNDLE"
+codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 
 if [[ -e "$ZIP_PATH" ]]; then
     rm -f "$ZIP_PATH"

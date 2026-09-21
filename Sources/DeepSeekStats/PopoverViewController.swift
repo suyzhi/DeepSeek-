@@ -4,14 +4,14 @@ import Foundation
 // MARK: - Popover View Controller
 class PopoverViewController: NSViewController {
     // MARK: - UI Components
-    private var chartContainer: NSView!
+    private var chartView: BalanceChartView!
     private var balanceValueLabel: NSTextField!
     private var balanceChangeLabel: NSTextField!
-    private var topUpButton: NSButton!
+    private(set) var topUpButton: NSButton!
     private var loadingSpinner: NSProgressIndicator!
     private var errorLabel: NSTextField!
     private var emptyLabel: NSTextField!
-    private var intervalButtons: [NSButton] = []
+    private(set) var intervalButtons: [NSButton] = []
     private var separatorLine: NSView!
     private var chartIconLabel: NSTextField!
     private var chartTitleLabel: NSTextField!
@@ -22,9 +22,28 @@ class PopoverViewController: NSViewController {
     private var refreshButton: NSButton!
     private var settingsButton: NSButton!
     private var isCompact = false
-    private var previousLinePath: CGPath?
-    private var previousPointCount = 0
     private var isAnimatingCompactTransition = false
+
+    private enum Layout {
+        static let width: CGFloat = 300
+        static let chartHeight: CGFloat = 170
+        static let expandedHeight: CGFloat = 370
+        static let compactHeight: CGFloat = 354
+    }
+
+    private lazy var todayTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private lazy var shortDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM/dd HH:mm"
+        return formatter
+    }()
 
     var onRefresh: (() -> Void)?
     var onOpenSettings: (() -> Void)?
@@ -35,9 +54,12 @@ class PopoverViewController: NSViewController {
     private var rawHistory: [BalanceSample] = []
     private var currentSnapshot: BalanceSnapshot?
 
+    /// Snapshot tests set this to `false` to capture a settled chart.
+    var animatesChart = true
+
     // MARK: - Lifecycle
     override func loadView() {
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 370))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: Layout.width, height: Layout.expandedHeight))
         self.view = v
     }
 
@@ -149,7 +171,7 @@ class PopoverViewController: NSViewController {
         let pillW: CGFloat = 38
         let gap: CGFloat = 5
         let total = CGFloat(intervals.count) * pillW + CGFloat(intervals.count - 1) * gap
-        let startX = (300 - total) / 2
+        let startX = (Layout.width - total) / 2
         for (i, item) in intervals.enumerated() {
             let btn = makePillButton(title: item.label, color: NSColor(white: 0.5, alpha: 0.3))
             btn.frame = NSRect(x: startX + CGFloat(i) * (pillW + gap), y: 0, width: pillW, height: 18)
@@ -163,13 +185,8 @@ class PopoverViewController: NSViewController {
         highlightInterval(at: selectedIntervalIndex)
 
         // ── Chart ──
-        chartContainer = NSView(frame: NSRect(x: 14, y: 0, width: 272, height: 170))
-        chartContainer.wantsLayer = true
-        chartContainer.layer?.cornerRadius = 12
-        chartContainer.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.55).cgColor
-        chartContainer.layer?.borderColor = NSColor(white: 0.2, alpha: 0.4).cgColor
-        chartContainer.layer?.borderWidth = 0.5
-        root.addSubview(chartContainer)
+        chartView = BalanceChartView(frame: NSRect(x: 14, y: 0, width: 272, height: Layout.chartHeight))
+        root.addSubview(chartView)
 
         // Empty-state label
         emptyLabel = makeLabel("暂无数据\n使用后将自动记录余额变化", size: 11, weight: .regular, color: NSColor(white: 0.45, alpha: 1))
@@ -229,6 +246,7 @@ class PopoverViewController: NSViewController {
             loadingSpinner.isHidden = false
             loadingSpinner.startAnimation(nil)
             refreshButton.isEnabled = false
+            refreshButton.toolTip = "立即刷新"
             if let previous {
                 currentSnapshot = previous
                 balanceValueLabel.stringValue = MoneyFormatter.string(
@@ -285,71 +303,56 @@ class PopoverViewController: NSViewController {
     }
 
     private func updateChangeLabel() {
-        let raw = rawWindowData()
-        let intervalName = intervals[selectedIntervalIndex].label
-
-        // Determine if there's meaningful change
-        let hasChange: Bool
         guard let snapshot = currentSnapshot else {
             balanceChangeLabel.stringValue = ""
             setCompactMode(true)
             return
         }
-        let currentBalanceValue = decimalDouble(snapshot.amount)
-        if raw.count >= 2, let first = raw.first {
-            hasChange = abs(currentBalanceValue - decimalDouble(first.amount)) >= 0.01
-        } else {
-            hasChange = false
-        }
-        setCompactMode(!hasChange)
 
-        if raw.count >= 2, let first = raw.first {
-            let chg = currentBalanceValue - decimalDouble(first.amount)
-            let formatted = MoneyFormatter.string(
-                amount: Decimal(abs(chg)),
-                currency: snapshot.currency
-            )
-            if chg < -0.01 {
-                balanceChangeLabel.stringValue = "近\(intervalName)消费 \(formatted)"
-                balanceChangeLabel.textColor = NSColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
-            } else if chg > 0.01 {
-                balanceChangeLabel.stringValue = "近\(intervalName)充值 \(formatted)"
-                balanceChangeLabel.textColor = NSColor(red: 0.4, green: 1, blue: 0.5, alpha: 1)
-            } else {
-                balanceChangeLabel.stringValue = "近\(intervalName)无变动"
-                balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
-            }
-        } else if raw.count == 1 {
+        let intervalName = intervals[selectedIntervalIndex].label
+        let change = BalanceChangeCalculator.compute(
+            snapshot: snapshot,
+            windowSamples: rawWindowData()
+        )
+        setCompactMode(!change.isMeaningful)
+
+        switch change {
+        case .none:
+            balanceChangeLabel.stringValue = ""
+        case .unchanged:
             balanceChangeLabel.stringValue = "近\(intervalName)无变动"
             balanceChangeLabel.textColor = NSColor(white: 0.55, alpha: 1)
-        } else {
-            balanceChangeLabel.stringValue = ""
+        case .spent(let amount):
+            balanceChangeLabel.stringValue = "近\(intervalName)消费 \(MoneyFormatter.string(amount: amount, currency: snapshot.currency))"
+            balanceChangeLabel.textColor = NSColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
+        case .toppedUp(let amount):
+            balanceChangeLabel.stringValue = "近\(intervalName)充值 \(MoneyFormatter.string(amount: amount, currency: snapshot.currency))"
+            balanceChangeLabel.textColor = NSColor(red: 0.4, green: 1, blue: 0.5, alpha: 1)
         }
     }
 
     // MARK: - Chart
     private func refreshChart() {
-        if let series = currentWindow(), series.points.count >= 2 {
+        if let snapshot = currentSnapshot,
+           let series = currentWindow(),
+           series.points.count >= 2 {
             emptyLabel.isHidden = true
-            // Capture old chart as bitmap for crossfade
-            let snapshot = captureChartBitmap()
-            drawChart(series, oldSnapshot: snapshot)
+            chartView.render(series, currency: snapshot.currency, animated: animatesChart)
         } else {
             emptyLabel.isHidden = false
-            chartContainer.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
-            previousLinePath = nil
-            previousPointCount = 0
+            chartView.clear()
         }
     }
 
-    /// Raw (un-grouped) data points within the selected time window
+    /// Raw (un-grouped) data points within the selected time window.
     private func rawWindowData() -> [BalanceSample] {
         guard let snapshot = currentSnapshot else { return [] }
-        let cutoff = Date().addingTimeInterval(-TimeInterval(intervals[selectedIntervalIndex].minutes * 60))
-        return rawHistory.filter {
-            $0.currency.caseInsensitiveCompare(snapshot.currency) == .orderedSame
-                && $0.timestamp >= cutoff
-        }.sorted { $0.timestamp < $1.timestamp }
+        return ChartSeriesBuilder.windowedSamples(
+            samples: rawHistory,
+            currency: snapshot.currency,
+            interval: intervals[selectedIntervalIndex],
+            endingAt: Date()
+        )
     }
 
     /// Grouped data for chart rendering
@@ -367,281 +370,6 @@ class PopoverViewController: NSViewController {
         )
     }
 
-    private func drawChart(_ series: ChartSeries, oldSnapshot: CGImage?) {
-        chartContainer.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
-        let container = chartContainer!
-        let c = container.bounds.insetBy(dx: 4, dy: 6)
-
-        // Plot area with balanced margins
-        let pX: CGFloat = c.minX + 54                       // left edge (room for Y labels)
-        let pY: CGFloat = c.minY + 22                       // bottom edge (room for X labels)
-        let pW: CGFloat = max(c.width - 54 - 14, 20)        // plot width
-        let pH: CGFloat = max(c.height - 22 - 14, 20)       // plot height (22 bottom + 14 top)
-
-        let vals = series.points.map { decimalDouble($0.amount) }
-        let lo = series.minimum
-        let hi = series.maximum
-        let rng = max(hi - lo, 0.000_001)
-
-        // ── Time window params (used by both X-axis labels AND data points) ──
-        guard series.points.count >= 2 else { return }
-        let windowEnd = series.end
-        let windowStart = series.start
-        let startSec = windowStart.timeIntervalSinceReferenceDate
-        let totalSpan = max(windowEnd.timeIntervalSince(windowStart), 1)
-
-        // ── Grid lines ──
-        for frac: CGFloat in [0, 0.25, 0.5, 0.75, 1] {
-            let y = pY + frac * pH
-            let line = CALayer()
-            line.frame = NSRect(x: pX, y: y, width: pW, height: 0.5)
-            line.backgroundColor = NSColor(white: 0.3, alpha: 0.12).cgColor
-            container.layer?.addSublayer(line)
-
-            let amount = Decimal(lo + Double(frac) * rng)
-            let label = currentSnapshot.map {
-                MoneyFormatter.string(amount: amount, currency: $0.currency, fractionDigits: 1)
-            } ?? String(format: "%.1f", NSDecimalNumber(decimal: amount).doubleValue)
-            let lbl = makeAxisLabel(label, size: 10, color: .init(white: 0.55, alpha: 0.9))
-            lbl.frame = NSRect(x: c.minX, y: y - 6, width: pX - c.minX - 4, height: 12)
-            lbl.alignmentMode = .left
-            container.layer?.addSublayer(lbl)
-        }
-
-        // ── X-axis time labels (based on selected window) ──
-
-        // Tick interval based on selected time span
-        let tickInterval: TimeInterval
-        let displayedMinutes = totalSpan / 60
-        if displayedMinutes <= 5 { tickInterval = 60 }           // every 1 min
-        else if displayedMinutes <= 60 { tickInterval = 300 }     // every 5 min
-        else if displayedMinutes <= 1440 { tickInterval = 3600 }  // every 1 hour
-        else { tickInterval = 86400 }                 // every 1 day
-
-        // Round window start up to next clean tick boundary
-        let roundedStartSec = ceil(startSec / tickInterval) * tickInterval
-        let roundedStart = Date(timeIntervalSinceReferenceDate: roundedStartSec)
-
-        let tickFmt = DateFormatter()
-        tickFmt.dateFormat = displayedMinutes > 1440 ? "MM/dd" : "HH:mm"
-
-        var tickDate = roundedStart
-        var lastLabelX: CGFloat = -.infinity
-        let minLabelSpacing: CGFloat = 40
-        while tickDate <= windowEnd {
-            let fraction = (tickDate.timeIntervalSinceReferenceDate - startSec) / totalSpan
-            let x = pX + CGFloat(max(0, fraction)) * pW
-            // Skip first (overlaps Y-axis) or too close to previous
-            if x > pX + 5 && x - lastLabelX >= minLabelSpacing {
-                let lbl = makeAxisLabel(tickFmt.string(from: tickDate), size: 9, color: .init(white: 0.55, alpha: 0.9))
-                lbl.frame = NSRect(x: x - 18, y: pY - 18, width: 36, height: 12)
-                lbl.alignmentMode = .center
-                container.layer?.addSublayer(lbl)
-                lastLabelX = x
-            }
-            tickDate = tickDate.addingTimeInterval(tickInterval)
-        }
-
-        // ── Build points using their actual timestamp within the selected window ──
-        var pts: [CGPoint] = []
-        for (i, v) in vals.enumerated() {
-            let fraction = series.xFraction(for: series.points[i].timestamp)
-            let x = pX + CGFloat(fraction) * pW
-            let y = pY + CGFloat((v - lo) / rng) * pH
-            pts.append(CGPoint(x: x, y: y))
-        }
-        guard pts.count >= 2 else { return }
-
-        // ── Curve layer (separate from grid, for independent animation) ──
-        let curveLayer = CALayer()
-        curveLayer.frame = container.bounds
-        container.layer?.addSublayer(curveLayer)
-
-        // ── Vertical drop lines (fade in after curve morph) ──
-        let dropLayer = CALayer()
-        dropLayer.frame = container.bounds
-        dropLayer.opacity = 0
-        curveLayer.addSublayer(dropLayer)
-
-        for pt in pts {
-            let dh = max(0, pt.y - pY)
-            let dl = CALayer()
-            dl.frame = NSRect(x: pt.x - 0.5, y: pY, width: 1, height: dh)
-            dl.backgroundColor = NSColor(white: 0.45, alpha: 0.12).cgColor
-            dropLayer.addSublayer(dl)
-        }
-
-        let dropFade = CABasicAnimation(keyPath: "opacity")
-        dropFade.fromValue = 0
-        dropFade.toValue = 1.0
-        dropFade.duration = 0.35
-        dropFade.beginTime = CACurrentMediaTime() + 0.45
-        dropFade.fillMode = .forwards
-        dropFade.isRemovedOnCompletion = false
-        dropLayer.add(dropFade, forKey: "dropFade")
-
-        // ── Smooth curve ──
-        let smoothPath = smoothedPath(pts)
-
-        let line = CAShapeLayer()
-        line.path = smoothPath
-        line.strokeColor = NSColor(red: 0.35, green: 0.78, blue: 1.0, alpha: 0.85).cgColor
-        line.lineWidth = 2
-        line.fillColor = nil
-        line.lineCap = .round
-        line.lineJoin = .round
-        curveLayer.addSublayer(line)
-
-        // Morph from the previous curve when its structure is compatible.
-        // On first render or after the point count changes, rise from a
-        // point-compatible baseline instead of attempting an invalid morph.
-        let baselinePoints = pts.map { CGPoint(x: $0.x, y: pY) }
-        let animationStartPath: CGPath
-        if let prevLine = previousLinePath, previousPointCount == pts.count {
-            animationStartPath = prevLine
-        } else {
-            animationStartPath = smoothedPath(baselinePoints)
-        }
-
-        let morph = CABasicAnimation(keyPath: "path")
-        morph.fromValue = animationStartPath
-        morph.toValue = smoothPath
-        morph.duration = 0.55
-        morph.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        line.add(morph, forKey: "curveMorph")
-        previousLinePath = smoothPath
-        previousPointCount = pts.count
-
-        // ── Smooth fill (wipe from top to bottom after curve morph) ──
-        let fillPath = CGMutablePath()
-        fillPath.move(to: CGPoint(x: pts[0].x, y: pY))
-        for pt in pts { fillPath.addLine(to: pt) }
-        fillPath.addLine(to: CGPoint(x: pts.last!.x, y: pY))
-        fillPath.closeSubpath()
-
-        // Start shape: collapsed to a thin strip at the bottom
-        let startPath = CGMutablePath()
-        startPath.move(to: CGPoint(x: pX, y: pY))
-        startPath.addLine(to: CGPoint(x: pX, y: pY + 1))
-        for pt in pts.dropFirst() {
-            startPath.addLine(to: CGPoint(x: pt.x, y: pY + 1))
-        }
-        startPath.addLine(to: CGPoint(x: pX + pW, y: pY))
-        startPath.closeSubpath()
-
-        let fill = CAShapeLayer()
-        fill.path = startPath
-        fill.fillColor = NSColor(red: 0.3, green: 0.6, blue: 1.0, alpha: 0.15).cgColor
-        curveLayer.addSublayer(fill)
-
-        let wipeAnim = CABasicAnimation(keyPath: "path")
-        wipeAnim.fromValue = startPath
-        wipeAnim.toValue = fillPath
-        wipeAnim.duration = 0.4
-        wipeAnim.beginTime = CACurrentMediaTime() + 0.45
-        wipeAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        wipeAnim.fillMode = .forwards
-        wipeAnim.isRemovedOnCompletion = false
-        fill.add(wipeAnim, forKey: "fillWipe")
-
-        // Glow behind the line — fade in after curve morph completes
-        let glow = CAShapeLayer()
-        glow.path = smoothPath
-        glow.strokeColor = NSColor(red: 0.3, green: 0.7, blue: 1.0, alpha: 0.15).cgColor
-        glow.lineWidth = 4
-        glow.fillColor = nil
-        glow.lineCap = .round
-        glow.lineJoin = .round
-        glow.opacity = 0
-        curveLayer.addSublayer(glow)
-
-        let glowFade = CABasicAnimation(keyPath: "opacity")
-        glowFade.fromValue = 0
-        glowFade.toValue = 1.0
-        glowFade.duration = 0.35
-        glowFade.beginTime = CACurrentMediaTime() + 0.45
-        glowFade.fillMode = .forwards
-        glowFade.isRemovedOnCompletion = false
-        glow.add(glowFade, forKey: "glowFade")
-
-        // ── Dots ──
-        for (i, pt) in pts.enumerated() {
-            let isLast = i == pts.count - 1
-            let dot = CALayer()
-            let sz: CGFloat = isLast ? 6 : 2.5
-            dot.frame = NSRect(x: pt.x - sz/2, y: pt.y - sz/2, width: sz, height: sz)
-            dot.cornerRadius = sz / 2
-            dot.backgroundColor = isLast
-                ? NSColor(red: 0.4, green: 0.85, blue: 1, alpha: 1).cgColor
-                : NSColor(white: 0.85, alpha: 0.6).cgColor
-
-            if isLast {
-                let ring = CALayer()
-                let rs: CGFloat = 10
-                ring.frame = NSRect(x: pt.x - rs/2, y: pt.y - rs/2, width: rs, height: rs)
-                ring.cornerRadius = rs / 2
-                ring.backgroundColor = NSColor(red: 0.35, green: 0.78, blue: 1, alpha: 0.2).cgColor
-                curveLayer.addSublayer(ring)
-            }
-            curveLayer.addSublayer(dot)
-        }
-
-        // ── Crossfade: old snapshot fades out ──
-        if let snap = oldSnapshot {
-            let snapLayer = CALayer()
-            snapLayer.contents = snap
-            snapLayer.frame = container.bounds
-            container.layer?.addSublayer(snapLayer)
-
-            let fadeOut = CABasicAnimation(keyPath: "opacity")
-            fadeOut.fromValue = 1.0
-            fadeOut.toValue = 0.0
-            fadeOut.duration = 0.5
-            fadeOut.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            fadeOut.isRemovedOnCompletion = false
-            fadeOut.fillMode = .forwards
-            CATransaction.begin()
-            CATransaction.setCompletionBlock { snapLayer.removeFromSuperlayer() }
-            snapLayer.add(fadeOut, forKey: nil)
-            CATransaction.commit()
-        }
-
-        // Subtle pop on new curve
-        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
-        pop.values = [0.93, 1.0]
-        pop.keyTimes = [0, 1]
-        pop.duration = 0.5
-        pop.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        curveLayer.add(pop, forKey: "chartPop")
-    }
-
-    /// Capture current chart content as bitmap for crossfade
-    private func captureChartBitmap() -> CGImage? {
-        guard let layer = chartContainer?.layer, let subs = layer.sublayers, !subs.isEmpty else { return nil }
-        let bounds = layer.bounds
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
-        let w = Int(bounds.width * scale)
-        let h = Int(bounds.height * scale)
-        guard let ctx = CGContext(data: nil, width: w, height: h,
-                                  bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        ctx.scaleBy(x: scale, y: scale)
-        layer.render(in: ctx)
-        return ctx.makeImage()
-    }
-
-    /// Straight line segments
-    private func smoothedPath(_ pts: [CGPoint]) -> CGPath {
-        let path = CGMutablePath()
-        guard pts.count >= 1 else { return path }
-        path.move(to: pts[0])
-        for i in 1..<pts.count {
-            path.addLine(to: pts[i])
-        }
-        return path
-    }
-
     // MARK: - Helpers
 
     /// Dynamic layout: positions all subviews bottom-up based on view bounds and compact mode.
@@ -653,9 +381,9 @@ class PopoverViewController: NSViewController {
 
         var y: CGFloat = bottomPad
 
-        // Chart container
-        chartContainer.frame.origin.y = y
-        y += 170
+        // Chart
+        chartView.frame.origin.y = y
+        y += Layout.chartHeight
 
         // Interval buttons
         y += 10
@@ -708,7 +436,7 @@ class PopoverViewController: NSViewController {
     private func setCompactMode(_ compact: Bool) {
         guard isCompact != compact else { return }
         var transitionViews: [NSView] = []
-        transitionViews.append(chartContainer)
+        transitionViews.append(chartView)
         transitionViews.append(chartIconLabel)
         transitionViews.append(chartTitleLabel)
         transitionViews.append(separatorLine)
@@ -740,7 +468,7 @@ class PopoverViewController: NSViewController {
             balanceChangeLabel.alphaValue = 0
         }
 
-        let targetSize = NSSize(width: 300, height: compact ? 354 : 370)
+        let targetSize = NSSize(width: Layout.width, height: compact ? Layout.compactHeight : Layout.expandedHeight)
         preferredContentSize = targetSize
         onContentSizeChange?(targetSize)
 
@@ -789,10 +517,12 @@ class PopoverViewController: NSViewController {
         separatorLine = sep
     }
 
+    /// The pill is drawn entirely by the layer: a bordered bezel would stack a
+    /// second rounded background on top of it and steal ~22pt of label width.
     private func makePillButton(title: String, color: NSColor) -> NSButton {
-        let btn = NSButton(frame: .zero)
+        let btn = PillButton(frame: .zero)
         btn.title = title
-        btn.bezelStyle = .rounded
+        btn.isBordered = false
         btn.wantsLayer = true
         btn.layer?.cornerRadius = 5
         btn.layer?.backgroundColor = color.cgColor
@@ -820,14 +550,8 @@ class PopoverViewController: NSViewController {
     }
 
     private func timeString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM/dd HH:mm"
+        let formatter = Calendar.current.isDateInToday(date) ? todayTimeFormatter : shortDateTimeFormatter
         return formatter.string(from: date)
-    }
-
-    private func decimalDouble(_ value: Decimal) -> Double {
-        NSDecimalNumber(decimal: value).doubleValue
     }
 
     private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
@@ -840,13 +564,4 @@ class PopoverViewController: NSViewController {
         return l
     }
 
-    private func makeAxisLabel(_ text: String, size: CGFloat, color: NSColor) -> CATextLayer {
-        let l = CATextLayer()
-        l.string = text
-        l.fontSize = size
-        l.font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium)
-        l.foregroundColor = color.cgColor
-        l.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
-        return l
-    }
 }

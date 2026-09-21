@@ -166,20 +166,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func scheduleTimer() {
         timer?.invalidate()
         let seconds = TimeInterval(settings.refreshIntervalMinutes * 60)
-        timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: seconds, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.coordinator.refresh(reason: .timer)
             }
         }
+        // .common keeps the timer firing while menus/popovers are tracking.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     private func installStatusItem() {
-        if let existing = statusItem {
-            NSStatusBar.system.removeStatusItem(existing)
-        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = createStatusBarIcon(indicator: .loading)
+            // A native title lets "DS" adapt to light/dark menu bars; only the
+            // colored state dot is drawn as a custom image.
+            button.title = "DS"
+            button.font = NSFont.boldSystemFont(ofSize: 11)
+            button.imagePosition = .imageTrailing
+            button.imageScaling = .scaleProportionallyDown
+            button.image = createIndicatorImage(for: .loading)
             button.action = #selector(statusItemClicked)
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -195,21 +201,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             indicator = error == .missingAPIKey ? .failed : .stale
         case .failed: indicator = .failed
         }
-        statusItem.button?.image = createStatusBarIcon(indicator: indicator)
+        statusItem.button?.image = createIndicatorImage(for: indicator)
     }
 
-    private func createStatusBarIcon(indicator: IndicatorState) -> NSImage {
-        let size = NSSize(width: 20, height: 18)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 11),
-            .foregroundColor: NSColor.white,
-        ]
-        "DS".draw(at: NSPoint(x: 1, y: 1), withAttributes: attributes)
-        indicator.color.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 15, y: 4, width: 4, height: 4)).fill()
-        image.unlockFocus()
+    private func createIndicatorImage(for indicator: IndicatorState) -> NSImage {
+        let size = NSSize(width: 7, height: 7)
+        let image = NSImage(size: size, flipped: false) { rect in
+            indicator.color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
+            return true
+        }
         image.isTemplate = false
         return image
     }

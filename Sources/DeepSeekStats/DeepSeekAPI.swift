@@ -66,6 +66,7 @@ final class DeepSeekAPIClient: DeepSeekAPIClientProtocol {
         switch httpResponse.statusCode {
         case 200: break
         case 401, 403: throw APIError.unauthorized
+        case 429: throw APIError.rateLimited
         default: throw APIError.server(statusCode: httpResponse.statusCode)
         }
 
