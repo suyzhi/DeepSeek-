@@ -71,8 +71,13 @@ final class RefreshCoordinator {
         } catch is CancellationError {
             return
         } catch {
+            // URLSession reports cancellation as URLError(.cancelled), which the
+            // API client wraps as a transport error. A superseded refresh (see
+            // cancelAndRefresh) must not overwrite the newer refresh's state.
+            if Task.isCancelled { return }
             let apiError = normalize(error)
             let history = (try? await historyStore.load()) ?? []
+            if Task.isCancelled { return }
             if let latest = history.max(by: { $0.timestamp < $1.timestamp }) {
                 let cached = BalanceSnapshot(
                     amount: latest.amount,
