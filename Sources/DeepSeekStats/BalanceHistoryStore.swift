@@ -55,22 +55,26 @@ actor BalanceHistoryStore: BalanceHistoryStoreProtocol {
             return []
         }
 
+        let samples: [BalanceSample]
         do {
             let data = try Data(contentsOf: fileURL)
-            var samples = try decoder.decode([BalanceSample].self, from: data)
-            let normalized = normalize(samples)
-            if normalized != samples {
-                samples = normalized
-                try save(samples)
-            }
-            cachedSamples = samples
-            defaults.removeObject(forKey: Self.legacyDefaultsKey)
-            return samples
+            samples = try decoder.decode([BalanceSample].self, from: data)
         } catch {
             try quarantineCorruptFile()
             cachedSamples = []
             return []
         }
+
+        let normalized = normalize(samples)
+        if normalized != samples {
+            // Only read/decode failures mean the file is corrupt. If rewriting
+            // the trimmed history fails (disk full, permissions), keep the
+            // valid file and use the normalized samples from memory.
+            try? save(normalized)
+        }
+        cachedSamples = normalized
+        defaults.removeObject(forKey: Self.legacyDefaultsKey)
+        return normalized
     }
 
     @discardableResult
